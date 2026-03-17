@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Silence Turbopack/webpack conflict warning (Next.js 16)
+  turbopack: {},
   transpilePackages: [
     "@fullcalendar/core",
     "@fullcalendar/react",
