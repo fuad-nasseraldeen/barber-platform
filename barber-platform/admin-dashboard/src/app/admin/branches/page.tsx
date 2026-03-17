@@ -133,6 +133,9 @@ export default function AdminBranchesPage() {
       lat: branch.lat ?? undefined,
       lng: branch.lng ?? undefined,
       phone: branch.phone ?? "",
+      copyFromBranchId: "",
+      copyServices: false,
+      moveStaffIds: [],
     });
     setEditing(branch);
     setModal("edit");
