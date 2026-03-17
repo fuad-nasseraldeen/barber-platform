@@ -497,8 +497,7 @@ export default function AdminStaffPage() {
     if (modal === "add") {
       createMutation.mutate(form);
     } else if (modal === "edit" && editing) {
-      const { phone: _p, ...data } = form;
-      updateMutation.mutate({ id: editing.id, data });
+      updateMutation.mutate({ id: editing.id, data: form, omitPhone: true });
     }
   };
 
@@ -1665,15 +1664,13 @@ export default function AdminStaffPage() {
                     if (modal === "add") {
                       createMutation.mutate(form);
                     } else if (editing) {
-                      const { phone: _phone, ...data } = form;
-                      updateMutation.mutate({ id: editing.id, data });
+                      updateMutation.mutate({ id: editing.id, data: form, omitPhone: true });
                     }
                   } else {
                     if (modal === "add") {
                       createMutation.mutate(form);
                     } else if (editing) {
-                      const { phone: _phone, ...data } = form;
-                      updateMutation.mutate({ id: editing.id, data });
+                      updateMutation.mutate({ id: editing.id, data: form, omitPhone: true });
                     }
                   }
                 }}
