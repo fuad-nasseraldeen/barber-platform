@@ -176,7 +176,7 @@ export default function NewCustomerMessagePage() {
         </label>
         <button
           type="button"
-          onClick={() => updateMutation.mutate(buildNewCustomerPayload())}
+          onClick={() => updateMutation.mutate(buildNewCustomerPayload({}))}
           disabled={updateMutation.isPending}
           className="btn-primary rounded-lg px-4 py-2 text-sm font-medium"
         >
