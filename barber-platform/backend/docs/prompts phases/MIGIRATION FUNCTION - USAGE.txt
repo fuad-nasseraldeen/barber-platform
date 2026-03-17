@@ -1,0 +1,37 @@
+Here’s how to update migrations with Prisma:
+Updating migrations
+1. Change the schema (recommended)
+Edit prisma/schema.prisma, then create a new migration:
+cd barber-platform/backendnpx prisma migrate dev --name your_migration_name
+This will:
+Create a new migration from your schema changes
+Apply it to the database
+Regenerate the Prisma Client
+2. Edit an existing migration (before it’s applied)
+If the migration hasn’t been applied yet:
+Edit the SQL file in prisma/migrations/<timestamp>_<name>/migration.sql
+Run npx prisma migrate dev to apply it
+3. Reset and re-run migrations (dev only)
+If you’re in development and want to start over:
+npx prisma migrate reset
+This will:
+Drop the database
+Recreate it
+Apply all migrations
+Run the seed script (if configured)
+4. Production
+For production, only apply existing migrations:
+npx prisma migrate deploy
+Do not edit or reset migrations in production.
+5. If migrations are out of sync
+If the database and migrations are inconsistent:
+npx prisma migrate resolve --applied "migration_name"
+Or to mark a migration as rolled back:
+npx prisma migrate resolve --rolled-back "migration_name"
+Quick reference
+Task	Command
+Create new migration from schema changes	npx prisma migrate dev --name <name>
+Apply migrations (prod)	npx prisma migrate deploy
+Reset DB and re-apply all migrations	npx prisma migrate reset
+Regenerate Prisma Client	npx prisma generate
+Check migration status	npx prisma migrate status

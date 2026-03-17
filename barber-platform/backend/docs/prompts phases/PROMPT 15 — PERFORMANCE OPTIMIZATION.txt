@@ -1,0 +1,113 @@
+Optimize the SaaS platform for high performance.
+
+Implement the following improvements.
+
+1. Redis caching
+
+Cache:
+
+business data
+staff list
+services list
+availability slots
+
+2. Availability engine
+
+Do not calculate availability on every request.
+
+Use precomputed availability stored in:
+
+staff_availability_cache
+
+Update availability using background workers.
+
+3. Background jobs
+
+Use BullMQ workers for:
+
+availability generation
+reminder notifications
+analytics aggregation
+waitlist notifications
+
+4. Analytics tables
+
+Create:
+
+daily_business_stats
+daily_staff_stats
+daily_service_stats
+
+Update them using scheduled jobs.
+
+5. API performance
+
+Add pagination to large endpoints.
+
+Add indexes to frequently queried fields.
+
+6. Frontend performance
+
+Use TanStack Query cache.
+
+Use partial rendering and server components where possible.
+
+
+===== RESULT ======
+===== RESULT ======
+
+Summary of the performance optimizations:
+Summary of Performance Optimizations
+1. Redis caching
+Business: findBySlug and findById cached (10 min TTL). Cache invalidated on update/delete.
+Staff list: findAll cached (5 min TTL) when not paginated. Cache invalidated on create/update/delete.
+Availability slots: Uses staff_availability_cache and Redis (1 min TTL).
+Booking: Uses StaffService.findAll for cached staff list.
+2. Availability engine
+Uses staff_availability_cache; no per-request computation.
+AvailabilityWorkerService: BullMQ worker precomputes slots.
+AvailabilitySchedulerService: Daily cron at 00:05 UTC queues generation for all active staff for the booking window.
+On cache miss, generation is queued and an empty result is returned.
+3. Background jobs (BullMQ)
+Availability: availability queue – precomputes staff slots.
+Reminders: notification queue – appointment reminders.
+Analytics: AnalyticsAggregationService – daily cron at 01:00.
+Waitlist: processSlotAvailable on appointment cancellation.
+4. Analytics tables
+daily_business_stats: Appointments, revenue, new customers, waitlist per day.
+daily_staff_stats: Bookings and revenue per staff per day.
+daily_service_stats: Bookings and revenue per service per day.
+AnalyticsAggregationService: Cron at 01:00 UTC aggregates previous day.
+5. API performance
+Pagination:
+Staff: page, limit (default 20, max 100).
+Waitlist: page, limit.
+Notifications: page, limit.
+Indexes:
+notifications(businessId, createdAt) for list queries.
+6. Frontend performance
+TanStack Query:
+staleTime: 5 minutes.
+gcTime: 30 minutes.
+refetchOnWindowFocus: false.
+refetchOnReconnect: true.
+Server components: Home page remains a server component.
+Dashboard: Uses staleTime: 2 * 60 * 1000 and refetchOnWindowFocus: false.
+Files created/updated
+Backend
+prisma/schema.prisma – daily stats models, notification index.
+src/analytics/analytics-aggregation.service.ts – new.
+src/redis/cache.service.ts – businessById, staffList with branchId.
+src/business/business.service.ts – Redis caching.
+src/staff/staff.service.ts – Redis caching, pagination.
+src/booking/booking.service.ts – uses StaffService for cached staff.
+src/booking/booking.module.ts – imports StaffModule.
+src/waitlist/waitlist.service.ts – pagination.
+src/notifications/notifications.controller.ts – pagination.
+Frontend
+src/components/providers/query-provider.tsx – updated cache settings.
+Migrations
+20260309173208_add_daily_stats_tables
+20260309173420_add_notification_index
+Note
+If Prisma generate fails with EPERM, stop the backend server and run npx prisma generate again.

@@ -1,0 +1,146 @@
+Upgrade the Admin Dashboard UI to a modern SaaS dashboard similar to Stripe or Linear.
+
+Use Next.js 14 with App Router and Tailwind CSS.
+
+Requirements:
+
+Layout:
+
+Create a professional dashboard layout with:
+
+Sidebar navigation
+Top bar
+Main content area
+Optional right insights panel
+
+Sidebar menu:
+
+Dashboard
+Appointments
+Waitlist
+Customers
+Staff
+Services
+Analytics
+Automations
+Notifications
+Settings
+
+Top bar:
+
+Branch selector
+Global search
+Notifications icon
+User profile menu
+Dark mode toggle
+Language selector
+
+Dashboard widgets:
+
+Greeting message based on time of day.
+
+Key metrics cards:
+
+appointments today
+customers today
+revenue today
+waitlist size
+
+Graphs:
+
+Appointments trend (day / week / month / custom)
+Customer growth
+Staff performance
+
+Tables:
+
+Waitlist today
+Recent activity feed
+
+Activity feed:
+
+Show recent events such as:
+
+appointment booked
+appointment cancelled
+customer registered
+staff updated
+
+Notifications:
+
+Implement notification bell with dropdown.
+
+Support real-time notifications using WebSockets.
+
+Dark mode:
+
+Support light, dark, and system theme.
+
+Internationalization:
+
+Support Hebrew, Arabic, and English.
+
+Automatically switch between RTL and LTR layouts.
+
+Performance:
+
+Use TanStack Query caching.
+
+Avoid refetching dashboard data on every navigation.
+
+Use server components for initial dashboard data.
+
+
+===== RESULT ======
+===== RESULT ======
+
+Summary of the Admin Dashboard upgrade:
+Summary of Changes
+Layout
+Sidebar: Updated with icons (lucide-react), brand logo, and clearer hierarchy
+Top bar: Fixed header with search, branch selector, notifications, theme, locale, and user menu
+Main content: Scrollable area with padding
+Insights panel: Optional right panel on the dashboard (collapsible)
+Sidebar menu
+Dashboard, Appointments, Waitlist, Customers, Staff, Services, Analytics, Automations, Notifications, Settings
+Icons for each item
+Active state styling
+Top bar
+Branch selector: Dropdown for branch filter
+Global search: Search input (UI only for now)
+Notifications bell: Dropdown with unread count, WebSocket-backed list, mark-as-read
+User profile menu: Avatar, name, profile link, logout
+Dark mode toggle: Light / Dark / System
+Language selector: English, العربية, עברית
+Dashboard widgets
+Greeting: Time-based (morning/afternoon/evening/night)
+Metrics cards: Appointments today, Customers today, Revenue today, Waitlist size
+Graphs: Appointments trend (7 days), Customer growth (by week)
+Staff performance: Completion rate bars with gold/silver/bronze tiers
+Recent activity feed: Booking, cancellation, no-show, customer registered
+Visit metrics: Returning customers, avg visits, retention rate
+Waitlist table: Top 5 active waitlist entries with customer, service, date
+Notifications
+Notification store: Persisted list of WebSocket notifications
+Bell dropdown: List of notifications, mark all read
+WebSocket: Existing useNotifications hook updated to populate the store
+Dark mode
+Light, dark, and system themes
+Theme persisted in localStorage
+dark: Tailwind classes used across components
+Internationalization (i18n)
+English, Arabic, Hebrew
+RTL for Arabic and Hebrew via document.dir
+New keys for nav, top bar, metrics
+Performance
+TanStack Query: staleTime: 2m, gcTime: 30m, refetchOnWindowFocus: false
+Dashboard loading: loading.tsx skeleton
+Shared queries: ["dashboard", businessId, branchId] for caching
+Backend
+todayMetrics in analytics dashboard: appointmentsToday, customersToday, revenueToday, waitlistSize
+New pages
+/admin/waitlist – Active waitlist entries
+/admin/automations – Placeholder for automation rules
+/admin/notifications – Placeholder for notification settings
+Dependencies
+lucide-react for icons

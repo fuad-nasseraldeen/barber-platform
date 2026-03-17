@@ -1,0 +1,67 @@
+Implement Staff Management.
+
+Features:
+
+Create staff
+Update staff
+Deactivate staff
+Delete staff
+Assign services
+Set working hours
+Set breaks
+Set time off
+
+Endpoints:
+
+POST /staff
+PATCH /staff/:id
+DELETE /staff/:id
+GET /staff
+POST /staff-services
+POST /staff-working-hours
+POST /staff-breaks
+POST /staff-time-off
+
+Include validation and permission guards.
+
+======================================
+
+======================================
+RESULT ===============================
+======================================
+======================================
+Staff management is implemented. Summary:
+Staff Management Implementation
+Endpoints
+Method	Endpoint	Permission	Description
+POST	/staff	staff:create	Create staff
+GET	/staff	staff:read	List staff (query: businessId, includeInactive)
+GET	/staff/:id	staff:read	Get staff by ID
+PATCH	/staff/:id	staff:update	Update staff (including deactivate via isActive: false)
+DELETE	/staff/:id	staff:delete	Soft delete staff
+POST	/staff/services	staff:manage	Assign services to staff
+POST	/staff/working-hours	staff:manage	Set working hours
+POST	/staff/breaks	staff:manage	Add break
+POST	/staff/time-off	staff:manage	Add time off
+Guards & RBAC
+JwtAuthGuard and RolesGuard on all staff routes
+@Roles('owner', 'manager') at controller level
+@Permissions() per endpoint (staff:create, staff:read, staff:update, staff:delete, staff:manage)
+RolesGuard resolves businessId from params, body, or query, and from staffId when needed
+Validation (DTOs)
+CreateStaffDto – businessId, firstName, lastName, optional locationId, userId, email, phone, etc.
+UpdateStaffDto – businessId, optional fields including isActive for deactivation
+DeleteStaffDto – businessId in body
+ListStaffQueryDto – businessId (required), includeInactive (optional)
+StaffServicesDto, StaffWorkingHoursDto, StaffBreakDto, StaffTimeOffDto – validated per schema
+Route order
+Specific paths (/staff/services, /staff/working-hours, /staff/breaks, /staff/time-off) are declared before parameterized routes so they are matched correctly.
+Files touched
+src/staff/staff.controller.ts – controller with all endpoints
+src/staff/staff.module.ts – module wiring
+src/staff/dto/delete-staff.dto.ts – delete validation
+src/staff/dto/list-staff.dto.ts – list query validation
+src/staff/dto/update-staff.dto.ts – added businessId for RBAC
+src/common/guards/roles.guard.ts – businessId from query
+src/app.module.ts – StaffModule import
+API prefix is api/v1 by default, so full paths are e.g. POST /api/v1/staff, GET /api/v1/staff?businessId=....

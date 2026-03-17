@@ -1,0 +1,52 @@
+Implement Next.js dashboards.
+
+Admin dashboard:
+
+appointments
+staff
+services
+customers
+analytics
+settings
+
+Staff dashboard:
+
+calendar
+stats
+schedule
+services
+
+Use:
+
+TanStack Query
+Zustand
+Server Components
+
+TO BE COMPITABLE WITH ARABIC AND HEBREW LANGEUAGE
+
+===== RESULT ======
+===== RESULT ======
+
+Here’s what’s in place for the Next.js dashboards:
+Summary
+Admin dashboard (/admin/*)
+Layout with sidebar and locale switcher
+Pages: Appointments, Staff, Services, Customers, Analytics, Settings
+Staff dashboard (/staff/*)
+Layout with sidebar and locale switcher
+Pages: Calendar, Stats, Schedule, Services
+Stack
+TanStack Query – QueryProvider wraps the app
+Zustand – auth-store (user/token) and locale-store (en/ar/he)
+Server Components – dashboard pages are Server Components by default
+API client – src/lib/api-client.ts with base URL and JWT auth
+RTL support (Arabic & Hebrew)
+Locale switcher – English, العربية, עברית
+dir and lang – set on <html> from Zustand
+Inline script – reads locale-storage before hydration to avoid RTL flash
+Files created
+web/├── .env.local                    # NEXT_PUBLIC_API_URL, API_PREFIX├── src/│   ├── lib/api-client.ts│   ├── stores/auth-store.ts│   ├── stores/locale-store.ts│   ├── components/│   │   ├── providers/query-provider.tsx│   │   ├── providers/locale-provider.tsx│   │   └── ui/sidebar.tsx, locale-switcher.tsx│   └── app/│       ├── layout.tsx            # QueryProvider, LocaleProvider, RTL script│       ├── page.tsx              # Home with links to dashboards│       ├── admin/│       │   ├── layout.tsx│       │   ├── appointments/page.tsx│       │   ├── staff/page.tsx│       │   ├── services/page.tsx│       │   ├── customers/page.tsx│       │   ├── analytics/page.tsx│       │   └── settings/page.tsx│       └── staff/│           ├── layout.tsx│           ├── calendar/page.tsx│           ├── stats/page.tsx│           ├── schedule/page.tsx│           └── services/page.tsx
+Run the app
+Backend (NestJS): npm run start:dev → http://localhost:3000
+Next.js: cd web && npm run dev → http://localhost:3001
+NEXT_PUBLIC_API_URL in .env.local points to http://localhost:3000. Adjust it if your backend runs on a different host or port.

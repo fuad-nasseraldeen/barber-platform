@@ -1,0 +1,47 @@
+Implement Stripe payments.
+
+Endpoints:
+
+POST /payments/create-intent
+POST /payments/webhook
+
+Features:
+
+* deposits
+* full payments
+* attach payment to appointment
+* update appointment payment status
+
+===== RESULT ======
+===== RESULT ======
+Summary of the Stripe payments implementation:
+Stripe Payments Implementation
+Endpoints
+Method	Endpoint	Auth	Description
+POST	/api/v1/payments/create-intent	JWT + RBAC	Create a PaymentIntent for an appointment
+POST	/api/v1/payments/webhook	None (Stripe signature)	Handle Stripe webhook events
+Features
+Deposits – type: 'DEPOSIT' for partial payments
+Full payments – type: 'FULL' (default)
+Attach payment to appointment – Payment linked via appointmentId; appointment updated with paymentId
+Update appointment payment status – Webhook sets payment to SUCCEEDED/FAILED/CANCELLED and appointment to CONFIRMED on success
+Create Intent Request Body
+{  "businessId": "uuid",  "appointmentId": "uuid",  "customerId": "uuid",  "amount": 25.00,  "currency": "USD",  "type": "DEPOSIT",  "returnUrl": "https://...",  "cancelUrl": "https://..."}
+Response
+{  "clientSecret": "pi_xxx_secret_xxx",  "paymentIntentId": "pi_xxx",  "paymentId": "uuid"}
+Use clientSecret with Stripe.js on the frontend to complete payment.
+Webhook Events Handled
+payment_intent.succeeded → Payment SUCCEEDED, appointment CONFIRMED
+payment_intent.payment_failed → Payment FAILED
+payment_intent.canceled → Payment CANCELLED
+Schema Changes
+PaymentType enum: DEPOSIT, FULL
+Payment.type field (default FULL)
+Configuration
+main.ts – rawBody: true for webhook signature verification
+.env – STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
+Files Created
+src/payments/payments.service.ts – Create intent, webhook handling
+src/payments/payments.controller.ts – Endpoints
+src/payments/payments.module.ts – Module wiring
+src/payments/dto/create-intent.dto.ts – Validation

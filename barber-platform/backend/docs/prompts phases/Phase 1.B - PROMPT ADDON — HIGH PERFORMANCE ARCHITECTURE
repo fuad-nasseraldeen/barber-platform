@@ -1,0 +1,219 @@
+High Performance Architecture Requirements
+
+The platform must be extremely fast and scalable.
+
+The system must implement the following performance strategies.
+
+Do not implement naive solutions.
+
+1. Frontend Data Strategy
+
+Use TanStack Query for all API requests.
+
+Requirements:
+
+* Cache API responses
+* Avoid refetching on every page navigation
+* Use background refetch
+* Use optimistic updates
+* Use pagination and infinite queries when needed
+
+Example resources that should be cached:
+
+business info
+staff list
+services list
+appointments list
+availability
+
+Never refetch data unnecessarily.
+
+2. Redis Caching Strategy
+
+Use Redis to cache frequently accessed data.
+
+Cache keys examples:
+
+business:{slug}
+staff:list:{businessId}
+services:list:{businessId}
+appointments:day:{staffId}:{date}
+
+TTL rules:
+
+staff list: 5 minutes
+services list: 5 minutes
+business info: 10 minutes
+availability: 1 minute
+
+When data changes, invalidate related cache.
+
+3. Availability Engine
+
+Do NOT calculate availability in real time for every request.
+
+Instead implement a precomputation engine.
+
+Create a table:
+
+staff_availability_cache
+
+Fields:
+
+id
+staffId
+date
+slots (JSON array)
+generatedAt
+
+Example slots:
+
+[
+"09:00",
+"09:30",
+"10:00"
+]
+
+4. Availability Generation
+
+Availability must be generated using background jobs.
+
+Use BullMQ workers.
+
+Trigger generation when:
+
+working hours change
+breaks change
+time off changes
+appointments change
+new day starts
+
+The worker recalculates availability for the affected staff and dates.
+
+5. Booking Lock System
+
+Use Redis distributed locks.
+
+When a user selects a slot:
+
+create lock:
+
+lock:slot:{staffId}:{date}:{time}
+
+TTL:
+
+10 minutes
+
+If the booking is not confirmed within TTL, the lock expires automatically.
+
+6. Slot Reservation Logic
+
+When fetching availability:
+
+1 read from availability cache
+2 remove locked slots from Redis
+3 remove slots that overlap with appointments
+4 return remaining slots
+
+7. Background Jobs
+
+Use BullMQ for:
+
+availability generation
+reminder SMS
+waitlist notifications
+analytics aggregation
+
+Queues:
+
+availabilityQueue
+notificationQueue
+analyticsQueue
+
+8. API Performance
+
+Endpoints must support:
+
+pagination
+date filters
+staff filters
+
+Never return large unfiltered datasets.
+
+9. Database Optimization
+
+Add indexes for:
+
+appointments(staffId, startTime)
+appointments(businessId, startTime)
+staff_services(staffId)
+customers(phone)
+
+Use UUID primary keys.
+
+10. Frontend Navigation Performance
+
+Use Next.js App Router features:
+
+Server Components
+Streaming
+Partial rendering
+
+Avoid full page reloads.
+
+Always keep UI responsive during API calls.
+
+
+
+RESULT ========================================
+
+mplemented the high-performance architecture. Summary:
+1. Schema changes
+staff_availability_cache – one row per staff per date with JSON slots:
+slots – JSON array, e.g. ["09:00", "09:30", "10:00"]
+generatedAt – when the cache was generated
+@@unique([staffId, date]) – one cache row per staff per date
+customers – index on phone for lookups.
+Migration: prisma/migrations/20250309000000_performance_optimizations/migration.sql
+2. Redis caching (src/redis/)
+RedisService – ioredis client (Upstash TLS supported)
+CacheService – get/set/del with TTL and invalidation:
+business:{slug} – 10 min
+staff:list:{businessId} – 5 min
+services:list:{businessId} – 5 min
+appointments:day:{staffId}:{date} – 1 min
+invalidateBusiness(), invalidateStaff(), invalidateAvailability()
+3. Booking lock system (src/booking/)
+SlotLockService – Redis locks for slots:
+acquireLock(staffId, date, time) – NX + 10 min TTL
+releaseLock(), isLocked(), getLockedSlots(), extendLock()
+Key: lock:slot:{staffId}:{date}:{time}
+4. Availability engine (src/availability/)
+AvailabilityService.getAvailableSlots():
+Read from staff_availability_cache
+Exclude locked slots from Redis
+Exclude overlapping appointments
+Return remaining slots
+AvailabilityWorkerService – BullMQ worker:
+Computes slots from working hours, breaks, time off, holidays
+Upserts into staff_availability_cache
+Invalidates Redis cache
+5. BullMQ queues (src/queues/)
+QueueService – queues: availability, notification, analytics
+AvailabilityWorkerService – processes availability jobs
+6. Documentation
+docs/PERFORMANCE_ARCHITECTURE.md – covers:
+Frontend (TanStack Query)
+Redis caching
+Availability precomputation
+Booking locks
+Slot reservation
+Background jobs
+API performance
+DB indexes
+Next.js App Router
+Next steps
+Run migration: npx prisma migrate dev
+Add triggers for availability generation (e.g. in Staff/Appointment services)
+Add cron for daily availability generation
+Implement TanStack Query in the Next.js frontend (Phase 10)

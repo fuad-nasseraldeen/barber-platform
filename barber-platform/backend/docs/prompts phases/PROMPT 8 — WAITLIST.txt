@@ -1,0 +1,61 @@
+Implement the waitlist system.
+
+When a slot becomes available:
+
+1 detect cancellation
+2 check waitlist
+3 notify next customer
+4 temporarily reserve slot
+
+Entities:
+
+waitlist
+
+Fields:
+
+priority
+notifiedAt
+expiresAt
+status
+
+
+===== RESULT ======
+===== RESULT ======
+
+Summary of the waitlist implementation:
+Waitlist System
+Flow when a slot becomes available
+Detect cancellation – POST /appointments/cancel triggers waitlist processing.
+Check waitlist – ACTIVE entries are selected by priority, service, staff, and preferred date/time.
+Notify next customer – SMS sent via SmsService.send().
+Temporarily reserve slot – Redis lock with 15‑minute TTL (CACHE_TTL.WAITLIST_RESERVE).
+Waitlist fields
+Field	Purpose
+priority	Higher = sooner in line (default 0)
+notifiedAt	When the customer was notified
+expiresAt	When the NOTIFIED slot reservation expires
+status	ACTIVE, NOTIFIED, CONVERTED, CANCELLED
+notifiedSessionId	Redis lock session for NOTIFIED slot
+notifiedStaffId, notifiedDate, notifiedStartTime	Used to release lock on expiry
+Endpoints
+Method	Endpoint	Description
+POST	/api/v1/waitlist	Add to waitlist
+GET	/api/v1/waitlist?businessId=&status=	List waitlist entries
+GET	/api/v1/waitlist/:id	Get one entry
+PATCH	/api/v1/waitlist/:id	Update entry
+POST	/api/v1/waitlist/:id/cancel	Cancel waitlist entry
+POST	/api/v1/appointments/confirm-from-waitlist	Confirm booking from NOTIFIED waitlist
+Flow details
+Cancellation → processSlotAvailable() runs asynchronously.
+Matching – ACTIVE entries filtered by service, optional staff, preferred date range, preferred time range.
+Reservation – Slot locked in Redis for 15 minutes.
+Expiry – Cron every minute finds NOTIFIED entries with expiresAt < now, releases lock, sets status back to ACTIVE.
+Conversion – confirm-from-waitlist uses notifiedSessionId to confirm the booking and marks the waitlist entry as CONVERTED.
+Files created/updated
+Schema – priority, expiresAt, notifiedSessionId, notifiedStaffId, notifiedDate, notifiedStartTime on Waitlist; staff relation.
+Migrations – waitlist_priority_expires, waitlist_notified_session, waitlist_notified_slot.
+WaitlistModule – WaitlistService, WaitlistController.
+DTOs – CreateWaitlistDto, UpdateWaitlistDto, CancelWaitlistDto, ConvertWaitlistDto.
+SmsService – send(phone, message).
+SlotLockService – ttlSeconds parameter for custom TTL.
+BookingController – Cancellation triggers waitlist; confirm-from-waitlist endpoint

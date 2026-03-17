@@ -1,0 +1,68 @@
+Implement the booking engine.
+
+Flow:
+
+1 Load staff
+2 Load services
+3 Fetch availability
+4 Lock slot
+5 Confirm booking
+
+Endpoints:
+
+GET /availability
+POST /appointments/lock
+POST /appointments/confirm
+POST /appointments/cancel
+
+Rules:
+
+* prevent double booking
+* slot locking expires in 10 minutes
+* booking window configurable
+* respect breaks
+* respect time off
+* respect holidays
+
+Use Redis for slot locking.
+
+
+=========================
+RESULT ==================
+=========================
+
+Summary of the booking engine implementation:
+Booking Engine Implementation
+Flow
+Load staff – GET /availability returns staff with their slots
+Load services – Filter by serviceId or list all staff services
+Fetch availability – GET /availability returns slots per staff/service/date
+Lock slot – POST /appointments/lock locks the slot in Redis (10 min TTL)
+Confirm booking – POST /appointments/confirm creates the appointment and releases the lock
+Endpoints
+Method	Endpoint	Description
+GET	/api/v1/availability	Get available slots (query: businessId, date, staffId?, serviceId?, locationId?, days?)
+POST	/api/v1/appointments/lock	Lock a slot for 10 minutes
+POST	/api/v1/appointments/confirm	Confirm booking (create appointment)
+POST	/api/v1/appointments/cancel	Cancel an appointment
+Rules Implemented
+Double booking – DB appointments_no_overlap constraint + Redis lock + lock verification on confirm
+Slot lock TTL – 10 minutes (Redis EX + NX)
+Booking window – Configurable via BOOKING_WINDOW_DAYS (default 90)
+Breaks – Handled in AvailabilityWorkerService (excluded from slots)
+Time off – Handled in AvailabilityWorkerService (returns empty slots)
+Holidays – Handled in AvailabilityWorkerService via BusinessHoliday
+Redis Slot Locking
+SlotLockService locks all 30‑minute slots covered by the service duration
+Uses acquireLockForDuration / releaseLockForDuration for multi-slot services
+Lock value stores sessionId for ownership checks on confirm
+Files Created/Modified
+DTOs: availability-query.dto.ts, lock-slot.dto.ts, confirm-booking.dto.ts, cancel-appointment.dto.ts
+SlotLockService – Multi-slot locking, verifyLockForDuration
+AvailabilityService – Service duration filtering, booking window, optional cache generation
+BookingService – getAvailability, lockSlot, confirmBooking, cancelAppointment
+BookingController – All booking endpoints
+RedisModule – Exports SlotLockService globally
+Config
+Add to .env:
+BOOKING_WINDOW_DAYS=90

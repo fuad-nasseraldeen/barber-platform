@@ -1,0 +1,151 @@
+Design the complete PostgreSQL schema for this SaaS platform.
+
+Requirements:
+
+The system must support multi-tenant businesses.
+
+Main entities:
+
+users
+businesses
+business_users
+staff
+services
+staff_services
+customers
+appointments
+payments
+waitlist
+staff_working_hours
+staff_breaks
+staff_time_off
+business_holidays
+notifications
+audit_logs
+loyalty_points
+customer_notes
+staff_availability_cache
+
+Requirements:
+
+* Use UUID primary keys
+* Use soft deletes (deletedAt)
+* Add indexes for performance
+* Add foreign keys
+* Prevent overlapping appointments
+* Add unique constraints where needed
+* Support high performance booking queries
+
+Generate:
+
+1. Prisma schema
+2. PostgreSQL indexes
+3. Explanation of design decisions
+
+
+RESULLT =====
+Prisma schema
+The schema now includes all requested entities and conventions:
+Entity	Table	Notes
+User	users	UUID, soft delete
+Business	businesses	Multi-tenant root (was Tenant)
+BusinessUser	business_users	User–business–role link
+Staff	staff	Optional userId for login
+Service	services	With category, buffers
+StaffService	staff_services	Staff–service mapping
+Customer	customers	Per-business email unique
+Appointment	appointments	Slot locking, overlap constraint
+Payment	payments	Stripe fields
+Waitlist	waitlist	Preferred dates/times
+StaffWorkingHours	staff_working_hours	Recurring weekly schedule
+StaffBreak	staff_breaks	Breaks within shifts
+StaffTimeOff	staff_time_off	Vacation, sick days
+BusinessHoliday	business_holidays	Business-wide holidays
+Notification	notifications	In-app, email, SMS, push
+AuditLog	audit_logs	Immutable audit trail
+LoyaltyPoints	loyalty_points	Per-customer points
+CustomerNote	customer_notes	Notes with soft delete
+StaffAvailabilityCache	staff_availability_cache	Cached availability slots
+2. PostgreSQL indexes
+Indexes added for:
+Tenant isolation: (businessId) on business-scoped tables
+Booking: (businessId, startTime), (businessId, status), (staffId, startTime, endTime)
+Slot locking: unique slotKey on appointments and appointment_slots
+Availability: (staffId, date), (staffId, slotStart, slotEnd) on cache
+Search: (businessId, email) on customers
+Audit: (businessId, createdAt) on audit_logs
+3. Overlapping appointments
+Constraint added in the migration:
+CREATE EXTENSION IF NOT EXISTS btree_gist;ALTER TABLE "appointments" ADD CONSTRAINT "appointments_no_overlap" EXCLUDE USING gist ("staffId" WITH =, tsrange("startTime", "endTime") WITH &&) WHERE (status NOT IN ('CANCELLED', 'NO_SHOW'));
+This blocks overlapping appointments for the same staff, excluding cancelled and no-show.
+4. Design decisions
+Documented in docs/SCHEMA_DESIGN.md:
+UUID primary keys
+Soft deletes (deletedAt) on core entities
+Row-level multi-tenancy via businessId
+Slot locking with unique slotKey
+Staff availability: working hours, breaks, time off, holidays, cache
+5. Migration
+Because the schema changed (Tenant → Business, Booking → Appointment, new tables), you need a reset:
+npx prisma migrate reset
+This will:
+Drop existing tables
+Apply the new migration (including the overlap constraint)
+Run the seed
+If you prefer to keep existing data, a custom migration path would be needed instead of migrate reset.
+
+
+ =====RESULT 
+ 
+ Here’s what was implemented:
+1. Prisma schema
+The schema now includes all requested entities and conventions:
+Entity	Table	Notes
+User	users	UUID, soft delete
+Business	businesses	Multi-tenant root (was Tenant)
+BusinessUser	business_users	User–business–role link
+Staff	staff	Optional userId for login
+Service	services	With category, buffers
+StaffService	staff_services	Staff–service mapping
+Customer	customers	Per-business email unique
+Appointment	appointments	Slot locking, overlap constraint
+Payment	payments	Stripe fields
+Waitlist	waitlist	Preferred dates/times
+StaffWorkingHours	staff_working_hours	Recurring weekly schedule
+StaffBreak	staff_breaks	Breaks within shifts
+StaffTimeOff	staff_time_off	Vacation, sick days
+BusinessHoliday	business_holidays	Business-wide holidays
+Notification	notifications	In-app, email, SMS, push
+AuditLog	audit_logs	Immutable audit trail
+LoyaltyPoints	loyalty_points	Per-customer points
+CustomerNote	customer_notes	Notes with soft delete
+StaffAvailabilityCache	staff_availability_cache	Cached availability slots
+2. PostgreSQL indexes
+Indexes added for:
+Tenant isolation: (businessId) on business-scoped tables
+Booking: (businessId, startTime), (businessId, status), (staffId, startTime, endTime)
+Slot locking: unique slotKey on appointments and appointment_slots
+Availability: (staffId, date), (staffId, slotStart, slotEnd) on cache
+Search: (businessId, email) on customers
+Audit: (businessId, createdAt) on audit_logs
+3. Overlapping appointments
+Constraint added in the migration:
+CREATE EXTENSION IF NOT EXISTS btree_gist;ALTER TABLE "appointments" ADD CONSTRAINT "appointments_no_overlap" EXCLUDE USING gist ("staffId" WITH =, tsrange("startTime", "endTime") WITH &&) WHERE (status NOT IN ('CANCELLED', 'NO_SHOW'));
+This blocks overlapping appointments for the same staff, excluding cancelled and no-show.
+4. Design decisions
+Documented in docs/SCHEMA_DESIGN.md:
+UUID primary keys
+Soft deletes (deletedAt) on core entities
+Row-level multi-tenancy via businessId
+Slot locking with unique slotKey
+Staff availability: working hours, breaks, time off, holidays, cache
+5. Migration
+Because the schema changed (Tenant → Business, Booking → Appointment, new tables), you need a reset:
+npx prisma migrate reset
+This will:
+Drop existing tables
+Apply the new migration (including the overlap constraint)
+Run the seed
+If you prefer to keep existing data, a custom migration path would be needed instead of migrate reset.
+
+

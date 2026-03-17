@@ -1,0 +1,80 @@
+Implement the full authentication system.
+
+Requirements:
+
+Login methods:
+
+1. Phone OTP
+2. Google OAuth
+
+OTP requirements:
+
+* 6 digit code
+* expires in 5 minutes
+* rate limited
+* stored hashed
+
+Endpoints:
+
+POST /auth/request-otp
+POST /auth/verify-otp
+POST /auth/google
+
+Features:
+
+* create user if not exists
+* generate JWT
+* refresh tokens
+* link google account
+* link phone account
+
+Security:
+
+* rate limiting
+* request throttling
+* phone validation (E.164)
+
+Use NestJS modules:
+
+AuthModule
+OtpModule
+UsersModule
+
+
+result ====================
+
+Summary of the authentication system:
+Authentication System
+Modules
+Module	Purpose
+AuthModule	JWT, refresh tokens, auth endpoints
+OtpModule	OTP creation, verification, Redis storage (hashed)
+UsersModule	User CRUD, find-or-create, link accounts
+Endpoints
+Method	Endpoint	Auth	Description
+POST	/api/v1/auth/request-otp	No	Request OTP (rate limited)
+POST	/api/v1/auth/verify-otp	No	Verify OTP, return JWT + refresh token
+POST	/api/v1/auth/google	No	Google Sign-In, return JWT + refresh token
+POST	/api/v1/auth/refresh	No	Refresh access token
+POST	/api/v1/auth/link-google	JWT	Link Google to current user
+POST	/api/v1/auth/link-phone	JWT	Link phone to current user
+OTP
+6-digit code
+5-minute expiry
+SHA-256 hashed in Redis
+Rate limit: 3 requests per phone per 15 minutes
+Max 5 verification attempts per 5 minutes
+Security
+Phone validation: E.164 (+1234567890)
+Throttling: @nestjs/throttler (global + per-route)
+JWT: access token (15m), refresh token (7d)
+Schema Changes
+User: email optional, phone optional unique, phoneVerified
+Migration: 20250309000001_auth_phone_otp
+Files
+src/├── auth/│   ├── auth.module.ts│   ├── auth.controller.ts│   ├── auth.service.ts│   ├── google-verifier.service.ts│   ├── dto/│   ├── guards/│   └── strategies/├── otp/│   ├── otp.module.ts│   └── otp.service.ts├── users/│   ├── users.module.ts│   └── users.service.ts├── sms/│   ├── sms.module.ts│   └── sms.service.ts└── common/validators/    └── phone.validator.ts
+Next Steps
+Run migration: npx prisma migrate dev
+Set GOOGLE_CLIENT_ID in .env (for Google Sign-In)
+Set SMS_TO_API_KEY for real SMS (otherwise OTP is logged to console)
+Frontend: use @react-oauth/google and send credential to POST /auth/google

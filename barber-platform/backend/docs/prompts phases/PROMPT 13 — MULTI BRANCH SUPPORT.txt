@@ -1,0 +1,102 @@
+Extend the SaaS platform to support multiple branches per business.
+
+A business may have multiple physical branches.
+
+Update the architecture to support:
+
+Business
+└ Branches
+└ Staff
+└ Appointments
+└ Services
+└ Waitlist
+└ Customers
+
+Requirements:
+
+1. Create a new entity: Branch
+
+Fields:
+
+id
+businessId
+name
+address
+city
+lat
+lng
+phone
+createdAt
+
+2. Update existing entities to include branchId:
+
+staff
+appointments
+waitlist
+customers
+staff_working_hours
+staff_breaks
+staff_time_off
+
+branchId must be nullable to support existing data.
+
+3. Add API endpoints:
+
+GET /branches
+POST /branches
+PATCH /branches/:id
+DELETE /branches/:id
+
+4. Dashboard updates:
+
+Add branch selector in the dashboard header.
+
+Managers can view:
+
+* a specific branch
+* all branches
+
+5. Analytics must support:
+
+branch filter
+staff filter
+date range
+
+6. Ensure all queries are filtered by businessId and branchId where applicable.
+
+Do not break existing functionality.
+
+
+RESULT
+
+===== RESULT ======
+
+Summary of the multi-branch support:
+Summary of Changes
+1. Branch entity (Prisma schema)
+Added Branch model with: id, businessId, name, address, city, lat, lng, phone, createdAt, updatedAt
+Added branchId (nullable) to: staff, appointments, waitlist, customers, staff_working_hours, staff_breaks, staff_time_off
+2. Branch API
+GET /api/v1/branches?businessId=... – list branches
+POST /api/v1/branches – create branch
+PATCH /api/v1/branches/:id – update branch (body: businessId + fields)
+DELETE /api/v1/branches/:id – delete branch (body: businessId)
+3. Service updates
+Staff: branchId in create/update, branchId filter in list
+Booking: branchId in availability and confirm
+Waitlist: branchId in create and list filter
+Analytics: branchId and staffId filters, date range unchanged
+4. Dashboard
+Branch selector in admin and staff headers (when businessId exists)
+Options: “All branches” or a specific branch
+New “Branches” nav item and page under Admin
+5. Migration
+Migration 20260309103202_add_branches created
+Next steps
+Run migration (stop the backend first to avoid EPERM):
+   cd barber-platform/backend && npx prisma migrate deploy
+Regenerate Prisma client (with backend stopped):
+   npx prisma generate
+Use branch filter in API calls – pages that load staff, analytics, etc. should pass branchId from useBranchStore():
+   const branchId = useBranchStore(s => s.selectedBranchId);   // e.g. /staff?businessId=...&branchId=${branchId || ''}
+locationId is still supported for backward compatibility.

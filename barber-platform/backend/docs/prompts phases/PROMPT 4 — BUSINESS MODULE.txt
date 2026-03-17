@@ -1,0 +1,64 @@
+Implement the Business Module.
+
+Features:
+
+Create business
+Update business
+Delete business
+Invite staff
+Join business
+
+Entities:
+
+businesses
+business_users
+
+Roles:
+
+owner
+manager
+staff
+customer
+
+Endpoints:
+
+POST /business/create
+GET /business/:slug
+PATCH /business/:id
+POST /business/invite
+POST /business/join
+
+Include RBAC guards.
+
+Managers and owners can manage staff.
+
+RESULT ===========================
+=========================
+Here’s what was implemented:
+Business Module
+Endpoints
+Method	Endpoint	Auth	RBAC	Description
+POST	/api/v1/business/create	JWT	-	Create business (user becomes owner)
+POST	/api/v1/business/join	JWT	-	Join business with invite token
+GET	/api/v1/business/:slug	JWT	business:read	Get business by slug
+PATCH	/api/v1/business/:id	JWT	owner, manager	Update business
+DELETE	/api/v1/business/:id	JWT	owner	Soft delete business
+POST	/api/v1/business/invite	JWT	owner, manager	Invite staff by email
+Roles
+Role	Permissions
+owner	business:manage, staff:manage, user:manage
+manager	business:read/update, staff:manage
+staff	business:read, staff:read, appointment:read/update, customer:read
+customer	business:read, appointment:create/read
+Schema
+BusinessInvite – businessId, email, roleId, token, expiresAt, acceptedAt
+Flow
+Create: User creates business → becomes owner.
+Invite: Owner/manager sends invite (email + role) → returns invite link with token.
+Join: User opens link, calls POST /business/join with token → added as member.
+Files
+src/├── business/│   ├── business.module.ts│   ├── business.controller.ts│   ├── business.service.ts│   └── dto/├── common/│   ├── guards/roles.guard.ts│   └── decorators/│       ├── roles.decorator.ts│       └── current-user.decorator.ts
+Next steps
+Run migration: npx prisma migrate dev
+Seed roles: npm run prisma:seed
+Set APP_URL in .env for invite links

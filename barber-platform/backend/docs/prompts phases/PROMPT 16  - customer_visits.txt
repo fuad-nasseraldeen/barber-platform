@@ -1,0 +1,92 @@
+Add a new entity called customer_visits.
+
+Purpose:
+Track every completed appointment as a customer visit for analytics and CRM.
+
+Fields:
+
+id
+businessId
+branchId
+customerId
+staffId
+serviceId
+appointmentId
+visitDate
+status (completed | no_show | cancelled)
+price
+createdAt
+
+Rules:
+
+1. A visit is created when an appointment is completed.
+2. appointmentId must be unique.
+3. Add indexes for:
+
+customerId
+staffId
+branchId
+visitDate
+
+Dashboard integration:
+
+Add widgets:
+
+Returning customers
+Average visits per customer
+Customer retention rate
+
+Customer profile page:
+
+Add a section:
+
+Visit history table.
+
+Automation:
+
+Allow rules based on visits:
+
+customer_no_show_count
+last_visit_date
+visit_frequency
+
+
+===== RESULT ======
+===== RESULT ======
+
+Summary of what was implemented:
+Summary of Changes
+1. Visit creation on appointment status change
+POST /appointments/:id/status – staff can set status to COMPLETED or NO_SHOW
+UpdateAppointmentStatusDto – validates businessId and status
+BookingService.updateAppointmentStatus() – updates appointment and creates a CustomerVisit
+BookingService.cancelAppointment() – creates a CANCELLED visit when an appointment is cancelled
+CustomerVisitsModule – registered in BookingModule and AppModule
+2. Dashboard widgets
+Returning customers – customers with 2+ completed visits in the last 30 days
+Average visits per customer – total completed visits / unique customers
+Customer retention rate – % of customers with 2+ visits
+getVisitMetrics() in AnalyticsService – uses CustomerVisit with status COMPLETED
+i18n keys added for en, ar, he
+3. Customer profile and visit history
+CustomersModule – GET /customers (list) and GET /customers/:id (detail)
+/admin/customers – table of customers with links to profiles
+/admin/customers/[id] – profile page with:
+Customer info (name, email, phone, branch)
+Stats (total visits, no-shows, last visit, visit frequency)
+Visit history table (date, service, staff, status, price)
+4. Automation rules
+AutomationRule model – businessId, name, triggerType, conditions (JSON), actions (JSON)
+AutomationService.evaluateVisitRules() – evaluates visit-based conditions for a customer
+POST /automation/evaluate-visit-rules – API to evaluate rules
+Visit-based condition types:
+customer_no_show_count – e.g. { type: 'customer_no_show_count', operator: '>=', value: 2 }
+last_visit_date – days since last visit (e.g. { type: 'last_visit_date', operator: '>=', value: 30 })
+visit_frequency – visits per day (e.g. { type: 'visit_frequency', operator: '>=', value: 0.1 })
+5. Migrations
+20260309174004_add_automation_rules – adds automation_rules table
+API usage examples
+Update appointment status (mark completed):
+POST /api/v1/appointments/:id/status{ "businessId": "...", "status": "COMPLETED" }
+Evaluate visit rules:
+POST /api/v1/automation/evaluate-visit-rules{  "customerId": "...",  "businessId": "...",  "conditions": [    { "type": "customer_no_show_count", "operator": ">=", "value": 2 },    { "type": "last_visit_date", "operator": ">=", "value": 30 }  ]

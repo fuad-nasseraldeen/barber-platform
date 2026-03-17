@@ -1,0 +1,401 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Theme: dark - light mode (Theme=Dark, Mode=Light) */
+:root,
+[data-theme="dark"] {
+  --background: #f4f4f5;
+  --foreground: #18181b;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --muted: #e4e4e7;
+  --muted-foreground: #71717a;
+  --chart-1: 217 91% 60%;
+  --chart-2: 160 84% 39%;
+  --chart-3: 38 92% 50%;
+}
+
+/* Theme: dark - dark mode (Theme=Dark, Mode=Dark) */
+html.dark[data-theme="dark"] {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --muted: #27272a;
+  --muted-foreground: #a1a1aa;
+  --chart-1: 217 91% 60%;
+  --chart-2: 160 84% 39%;
+  --chart-3: 38 92% 50%;
+}
+
+/* Theme: gold */
+[data-theme="gold"] {
+  --background: #fefce8;
+  --foreground: #422006;
+  --primary: #b45309;
+  --primary-foreground: #ffffff;
+  --muted: #fef9c3;
+  --muted-foreground: #854d0e;
+  --chart-1: 38 92% 50%;
+  --chart-2: 160 84% 39%;
+  --chart-3: 217 91% 60%;
+}
+
+html.dark[data-theme="gold"] {
+  --background: #1c1917;
+  --foreground: #fef3c7;
+  --primary: #f59e0b;
+  --primary-foreground: #1c1917;
+  --muted: #292524;
+  --muted-foreground: #d6d3d1;
+  --chart-1: 38 92% 50%;
+  --chart-2: 160 84% 39%;
+  --chart-3: 217 91% 60%;
+}
+
+/* Theme: rose */
+[data-theme="rose"] {
+  --background: #fff1f2;
+  --foreground: #4c0519;
+  --primary: #e11d48;
+  --primary-foreground: #ffffff;
+  --muted: #ffe4e6;
+  --muted-foreground: #9f1239;
+}
+
+html.dark[data-theme="rose"] {
+  --background: #1f1315;
+  --foreground: #ffe4e6;
+  --primary: #f43f5e;
+  --primary-foreground: #ffffff;
+  --muted: #2e1b1e;
+  --muted-foreground: #e4e4e7;
+}
+
+/* Theme: coffee */
+[data-theme="coffee"] {
+  --background: #faf5f0;
+  --foreground: #292524;
+  --primary: #78350f;
+  --primary-foreground: #fef3c7;
+  --muted: #e7e5e4;
+  --muted-foreground: #57534e;
+}
+
+html.dark[data-theme="coffee"] {
+  --background: #1c1917;
+  --foreground: #fef3c7;
+  --primary: #d97706;
+  --primary-foreground: #1c1917;
+  --muted: #292524;
+  --muted-foreground: #a8a29e;
+}
+
+/* Theme: ocean */
+[data-theme="ocean"] {
+  --background: #f0f9ff;
+  --foreground: #0c4a6e;
+  --primary: #0284c7;
+  --primary-foreground: #ffffff;
+  --muted: #e0f2fe;
+  --muted-foreground: #0369a1;
+}
+
+html.dark[data-theme="ocean"] {
+  --background: #0c4a6e;
+  --foreground: #e0f2fe;
+  --primary: #38bdf8;
+  --primary-foreground: #0c4a6e;
+  --muted: #075985;
+  --muted-foreground: #bae6fd;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+/* Primary button - uses theme color (not hardcoded black) */
+.btn-primary {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  transition: all 0.2s ease;
+}
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary-gradient {
+  background: linear-gradient(to right, var(--primary), color-mix(in srgb, var(--primary) 80%, black));
+  color: var(--primary-foreground);
+  transition: all 0.3s ease-in-out;
+}
+.btn-primary-gradient:hover {
+  transform: scale(1.05);
+  filter: brightness(1.1);
+}
+
+/* Greeting card - uses theme primary color instead of hardcoded purple */
+.greeting-card {
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--primary) 18%, transparent),
+    color-mix(in srgb, var(--primary) 8%, transparent)
+  );
+  transition: background 0.3s ease-in-out;
+}
+
+/* Sidebar logo - uses theme primary */
+.sidebar-logo {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+/* Sidebar active item - uses theme primary */
+.sidebar-active {
+  background: color-mix(in srgb, var(--primary) 15%, transparent);
+  color: var(--primary);
+}
+
+/* Input/select focus ring - theme primary */
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Page transition - minimal fade + slide, 400ms */
+@keyframes pageTransitionIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.page-transition-enter-active {
+  animation: pageTransitionIn 400ms ease-out forwards;
+}
+
+/* Skeleton - primary color pulse */
+@keyframes skeleton-pulse {
+  0%, 100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+.skeleton-primary {
+  background: color-mix(in srgb, var(--primary) 25%, transparent) !important;
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+/* Button loader - primary color */
+.loading-button-spinner {
+  color: var(--primary);
+}
+
+/* Toggle switch - round knob, fully contained in track. direction: ltr keeps ON right, OFF left in RTL. */
+/* Standard green for all checkboxes across the app. */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 2.75rem;
+  height: 1.5rem;
+  min-width: 2.75rem;
+  min-height: 1.5rem;
+  border: none;
+  border-radius: 9999px;
+  background: #d4d4d8;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0.125rem;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+  direction: ltr;
+}
+input[type="checkbox"]::before {
+  content: "";
+  width: 1.125rem;
+  height: 1.125rem;
+  min-width: 1.125rem;
+  min-height: 1.125rem;
+  border-radius: 9999px;
+  background: white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: margin-inline-start 0.2s ease;
+  flex-shrink: 0;
+}
+input[type="checkbox"]:checked {
+  background: #10b981; /* emerald-500 */
+  justify-content: flex-end;
+}
+input[type="checkbox"]:hover:not(:disabled) {
+  background: #a1a1aa;
+}
+input[type="checkbox"]:checked:hover:not(:disabled) {
+  background: #059669; /* emerald-600 */
+}
+input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+input[type="checkbox"]:focus {
+  outline: 2px solid #10b981;
+  outline-offset: 2px;
+}
+html.dark input[type="checkbox"] {
+  background: #52525b;
+}
+html.dark input[type="checkbox"]:hover:not(:disabled) {
+  background: #71717a;
+}
+html.dark input[type="checkbox"]:checked {
+  background: #10b981;
+}
+html.dark input[type="checkbox"]:checked:hover:not(:disabled) {
+  background: #34d399; /* emerald-400 */
+}
+html.dark input[type="checkbox"]::before {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+/* Login page - animated background */
+@keyframes login-blob-1 {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+  }
+  33% {
+    transform: translate(30px, -20px) scale(1.05);
+  }
+  66% {
+    transform: translate(-20px, 20px) scale(0.95);
+  }
+}
+@keyframes login-blob-2 {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+  }
+  33% {
+    transform: translate(-25px, 25px) scale(1.08);
+  }
+  66% {
+    transform: translate(20px, -15px) scale(0.92);
+  }
+}
+@keyframes login-blob-3 {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(-15px, -25px) scale(1.06);
+  }
+}
+@keyframes login-gradient {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+.login-bg-blob-1 {
+  animation: login-blob-1 12s ease-in-out infinite;
+}
+.login-bg-blob-2 {
+  animation: login-blob-2 15s ease-in-out infinite;
+}
+.login-bg-blob-3 {
+  animation: login-blob-3 18s ease-in-out infinite;
+}
+.login-bg-gradient {
+  animation: login-gradient 8s ease infinite;
+}
+
+@keyframes appointmentPopupSlide {
+  from {
+    transform: translateY(100%);
+    opacity: 0.9;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* FullCalendar - Appointment blocks: Color accent + clean card */
+.appointment-fullcalendar .fc-appointment-event {
+  border-radius: 12px;
+  padding: 6px 8px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  border-left-width: 4px !important;
+  margin-bottom: 2px;
+  min-height: 32px;
+}
+.appointment-fullcalendar .fc-appointment-event:hover {
+  transform: scale(1.02);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.15);
+}
+.appointment-fullcalendar .fc-break-event {
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(113, 113, 122, 0.25),
+    rgba(113, 113, 122, 0.25) 8px,
+    rgba(161, 161, 170, 0.12) 8px,
+    rgba(161, 161, 170, 0.12) 16px
+  ) !important;
+  border: 1px solid rgba(113, 113, 122, 0.4) !important;
+  border-radius: 12px;
+  margin-bottom: 2px;
+}
+.appointment-fullcalendar .fc-vacation-event {
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(251, 191, 36, 0.18),
+    rgba(251, 191, 36, 0.18) 10px,
+    rgba(245, 158, 11, 0.06) 10px,
+    rgba(245, 158, 11, 0.06) 20px
+  ) !important;
+  border: 2px solid rgba(245, 158, 11, 0.6) !important;
+  border-radius: 12px;
+}
+.appointment-fullcalendar .fc-timegrid-slot:hover {
+  background: rgba(99, 102, 241, 0.08);
+  cursor: pointer;
+}
+.appointment-fullcalendar .fc-timegrid-now-indicator-line {
+  background: linear-gradient(90deg, #ec4899, #8b5cf6);
+  height: 2px;
+}
+.appointment-fullcalendar .fc-timegrid-now-indicator-arrow {
+  border-color: #8b5cf6;
+}
+

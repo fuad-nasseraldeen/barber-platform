@@ -1,0 +1,65 @@
+Implement the availability calculation engine.
+
+Availability must consider:
+
+* working hours
+* breaks
+* time off
+* holidays
+* existing appointments
+* buffer times
+
+Slots should be cached in Redis or database.
+
+Create:
+
+staff_availability_cache
+
+The system should precompute availability daily using background jobs.
+
+
+
+RESULLT 
+
+======
+
+Summary of the availability calculation engine implementation:
+Availability Calculation Engine
+Factors
+Factor	Implementation
+Working hours	StaffWorkingHours – 30‑min slots within startTime–endTime
+Breaks	StaffBreak – slots overlapping breaks are excluded
+Time off	StaffTimeOff – returns [] if date is in range
+Holidays	BusinessHoliday – recurring (month/day) and fixed dates
+Existing appointments	Filtered at read time (non‑cancelled, non‑no‑show)
+Buffer times	Applied at query time via service.durationMinutes + bufferBefore + bufferAfter
+Caching
+Database (staff_availability_cache)
+One row per staff per date
+slots JSON array (e.g. ["09:00","09:30","10:00"])
+Updated by BullMQ worker
+Redis
+Key: availability:{staffId}:{date}
+TTL: 60 seconds
+Read path: Redis → DB → Redis
+Invalidated when worker updates or staff schedule changes
+Daily Precompute
+Cron: 5 0 * * * (00:05 UTC)
+Job: Queues availability generation for all active staff for the next BOOKING_WINDOW_DAYS
+Service: AvailabilitySchedulerService
+Cache Invalidation
+Working hours – setWorkingHours invalidates and re-queues
+Breaks – addBreak invalidates and re-queues
+Time off – addTimeOff invalidates and re-queues
+Staff delete – invalidates Redis (DB rows remain via soft delete)
+Files Touched
+src/availability/availability.service.ts – Redis cache layer, filterOutBookedAndLocked
+src/availability/availability-worker.service.ts – findHolidayForDate (recurring), invalidateAndQueueForStaff
+src/availability/availability-scheduler.service.ts – daily cron job
+src/availability/availability.module.ts – scheduler registration
+src/staff/staff.service.ts – invalidation on schedule changes
+src/staff/staff.module.ts – AvailabilityModule import
+src/app.module.ts – ScheduleModule import
+Dependencies
+@nestjs/schedule added for cron
+

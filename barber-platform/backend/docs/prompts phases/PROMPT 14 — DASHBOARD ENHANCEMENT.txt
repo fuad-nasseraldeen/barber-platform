@@ -1,0 +1,139 @@
+Enhance the Admin Dashboard with advanced analytics and user experience features.
+
+Requirements:
+
+1. Dark mode support
+
+Store theme preference in user settings.
+
+2. Full i18n support
+
+Languages:
+
+Hebrew
+Arabic
+English
+
+The UI must support RTL and LTR dynamically.
+
+3. Notification system
+
+Add real-time notifications using WebSockets.
+
+Notifications include:
+
+appointment booked
+appointment cancelled
+appointment no show
+customer joined
+waitlist events
+
+Display notifications as toast popups with fade animation.
+
+4. Dashboard widgets
+
+Add widgets:
+
+Greeting message based on time of day.
+
+Customer growth graph
+Appointments graph
+Waitlist today
+App usage statistics
+Staff target progress
+Recent logins
+Today's birthdays (staff and customers)
+
+5. Staff targets
+
+Add progress bars and ranking system:
+
+Gold
+Silver
+Bronze
+
+Based on percentage of target achieved.
+
+6. Recent activity feed
+
+Show latest actions:
+
+bookings
+cancellations
+no-shows
+staff updates
+customer registrations
+
+7. Optimize dashboard performance
+
+Use TanStack Query caching.
+
+Do not refetch dashboard data on every navigation.
+
+Use background refresh.
+
+
+===== RESULT ======
+===== RESULT ======
+
+Summary of what was implemented:
+Summary of Admin Dashboard Enhancements
+1. Dark mode
+useThemeStore with light/dark/system
+Theme persisted in localStorage
+ThemeToggle in admin header
+Tailwind v4 @custom-variant dark for class-based dark mode
+Initial theme applied in layout script to avoid FOUC
+2. i18n (Hebrew, Arabic, English)
+Translation files in src/lib/i18n.ts for en/ar/he
+useTranslation hook
+RTL/LTR via useLocaleStore (already present)
+Nav items and dashboard use translations
+3. Notification system
+Backend
+GET /api/v1/notifications?businessId= for listing
+WebSocket gateway (Socket.IO) for real-time events
+Worker emits to WebSocket when creating notifications
+Frontend
+NotificationProvider connects to WebSocket
+Toast component with fade animation
+Toasts for: appointment booked, cancelled, no show, customer joined, waitlist events
+4. Dashboard widgets
+Greeting – time-based (morning/afternoon/evening/night)
+Customer growth – bar chart (last 30 days)
+Appointments – bar chart (last 7 days)
+Waitlist today – count
+Staff targets – Gold/Silver/Bronze by completion rate
+Recent activity – bookings, cancellations, no-shows, customer registrations
+Placeholders – App usage, Recent logins, Today’s birthdays (no backend data yet)
+5. Staff targets
+Progress bars by completion rate
+Gold (≥90%), Silver (≥70%), Bronze (&lt;70%)
+Revenue and booking counts shown
+6. Recent activity feed
+Last 20 events
+Types: booking, cancellation, no_show, customer_registered
+Staff, customer, service, and timestamp
+7. Performance
+Dashboard query: staleTime: 2 * 60 * 1000
+refetchOnWindowFocus: false for dashboard
+Background refresh via TanStack Query defaults
+Files created/updated
+Frontend
+src/stores/theme-store.ts, src/stores/toast-store.ts
+src/components/ui/theme-toggle.tsx, src/components/ui/toast.tsx
+src/lib/i18n.ts, src/hooks/use-translation.ts, src/hooks/use-notifications.ts
+src/components/providers/notification-provider.tsx
+src/app/admin/dashboard/page.tsx, src/app/admin/page.tsx (redirect)
+Backend
+src/notifications/notifications.controller.ts
+src/notifications/notifications.gateway.ts
+src/analytics/analytics.service.ts – getDashboard()
+src/analytics/dto/dashboard-query.dto.ts
+Environment
+Frontend: NEXT_PUBLIC_API_URL (default http://localhost:3000) for WebSocket
+WebSocket: /socket.io on the API server port
+Optional next steps
+Add backend data for App usage, Recent logins, Today’s birthdays
+Add birthdate fields to Staff/Customer if needed
+Add lastLoginAt to User for recent logins

@@ -1,0 +1,146 @@
+PHASE 1 
+
+Create a new NestJS monorepo backend project.
+
+Requirements:
+
+NestJS
+TypeScript
+Prisma ORM
+PostgreSQL
+Redis
+BullMQ
+
+Structure the project using modular architecture.
+
+You are a senior software architect and senior full-stack engineer.
+
+Your task is to design and implement a production-grade SaaS platform for service-based businesses such as:
+
+* Barber shops
+* Beauty salons
+* Gyms
+* Clinics
+
+The system must be extremely scalable, fast, and maintainable.
+
+Use modern best practices and architecture patterns.
+
+The stack:
+
+Backend:
+
+* NestJS
+* TypeScript
+* PostgreSQL
+* Prisma ORM
+* Redis
+* BullMQ
+* Stripe
+* Supabase Storage
+
+Frontend:
+
+* Next.js 14 (App Router)
+* TypeScript
+* TailwindCSS
+* TanStack Query
+* Zustand
+
+Architecture principles:
+
+* Multi-Tenant SaaS
+* Event-Driven architecture
+* RBAC permission system
+* Availability engine
+* Redis caching
+* Audit logging
+* Notification system
+* Booking engine with slot locking
+* Waitlist automation
+* Stripe payments
+* High performance
+
+The system must support thousands of businesses.
+
+Never generate placeholder architecture. Everything must be production-ready.
+
+Before generating code:
+
+1. Design the full system architecture
+2. Design the database schema
+3. Define modules
+4. Define services
+5. Define API routes
+6. Define caching strategy
+7. Define background jobs
+8. Define event system
+
+Then implement step by step.
+
+Do not generate everything at once.
+
+Instead build the system in phases.
+
+Phase 1: Database Architecture
+Phase 2: Authentication System
+Phase 3: Business Management
+Phase 4: Staff Management
+Phase 5: Booking Engine
+Phase 6: Availability Engine
+Phase 7: Payments
+Phase 8: Notifications
+Phase 9: Analytics
+Phase 10: Frontend Dashboards
+
+Always explain design decisions briefly.
+
+Start with **Phase 1 – Database Architecture**.
+
+
+
+=========================== RESULT 
+Phase 1: Database Architecture — Complete
+1. Architecture Document
+Created docs/ARCHITECTURE.md with:
+Multi-tenancy (row-level, shared DB)
+Entity relationship overview
+Indexing strategy
+Caching and event system preview
+2. NestJS Monorepo Structure
+new-barber/├── src/│   ├── app.module.ts│   ├── main.ts│   ├── prisma/          # Prisma module (global)│   └── health/          # Health check endpoint├── prisma/│   ├── schema.prisma    # Full production schema│   ├── seed.ts          # RBAC permissions seed│   └── migrations/│       └── 20250308000000_init/├── docs/│   └── ARCHITECTURE.md├── docker-compose.yml   # PostgreSQL 16 + Redis 7├── package.json└── .env.example
+3. Database Schema (Prisma)
+Tenant & identity
+Tenant – Business (barber, salon, gym, clinic)
+User – Global identity (multi-tenant)
+TenantUser – User–tenant–role link
+Role, Permission, RolePermission – RBAC
+RefreshToken – JWT refresh tokens
+Business
+Location – Physical locations
+ServiceCategory, Service – Services and categories
+Staff, StaffService – Staff and service assignments
+Scheduling
+StaffAvailability – Recurring and override availability
+Customer – Customer profiles
+Booking, BookingSlot – Appointments and slot locking
+Waitlist – Waitlist entries
+Payments & system
+Payment, Subscription – Stripe integration
+Notification, AuditLog – Notifications and audit trail
+4. Design Decisions
+Decision	Rationale
+Row-level tenancy	Single DB, simpler ops, suitable for thousands of tenants
+slotKey unique	Prevents double-booking under concurrency
+Staff.userId unique	One User → one Staff (1:1)
+Soft delete (deletedAt)	Recoverable deletions on core entities
+Composite indexes	(tenantId, startTime), (tenantId, status) for booking queries
+5. Next Steps
+Start Docker: npm run docker:up
+Run migrations: npm run prisma:migrate
+Seed permissions: npm run prisma:seed
+Start dev server: npm run start:dev
+Health check: GET /api/v1/health
+
+
+

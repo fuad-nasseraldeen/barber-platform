@@ -1,0 +1,52 @@
+Implement notification system.
+
+Channels:
+
+SMS
+Email
+Push
+
+Triggers:
+
+appointment booked
+appointment reminder
+waitlist notification
+
+Use BullMQ workers.
+
+===== RESULT ======
+===== RESULT ======
+
+Summary of the notification system implementation:
+Notification System
+Channels
+Channel	Service	Config
+SMS	SmsService (existing)	SMS_TO_API_KEY
+Email	EmailService (Resend)	RESEND_API_KEY, EMAIL_FROM
+Push	PushService (FCM)	FCM_SERVER_KEY
+IN_APP	Stored in Notification table	—
+Triggers
+Trigger	When	Source
+appointment_booked	After booking is confirmed	BookingService.confirmBooking
+appointment_reminder	24h before appointment	BullMQ delayed job
+waitlist_notification	When a slot becomes available	WaitlistService.processSlotAvailable
+BullMQ Flow
+NotificationService – queues jobs via notification queue.
+NotificationWorkerService – processes jobs and sends via SMS/Email/Push.
+Notification records – created in DB with sentAt after delivery.
+Schema Changes
+Notification.customerId – optional link to customer.
+Customer.notifications – relation to notifications.
+Files Created
+src/notifications/notification.service.ts – queue helpers: notifyAppointmentBooked, notifyAppointmentReminder, notifyWaitlistSlotAvailable, scheduleAppointmentReminder
+src/notifications/notification-worker.service.ts – BullMQ worker for notification queue
+src/notifications/email.service.ts – Resend API integration
+src/notifications/push.service.ts – FCM integration
+src/notifications/notification.types.ts – payload types
+src/notifications/notifications.module.ts – module wiring
+Wiring
+BookingService – calls notifyAppointmentBooked and scheduleAppointmentReminder after confirm.
+WaitlistService – uses notifyWaitlistSlotAvailable instead of direct SMS.
+Environment Variables
+RESEND_API_KEY=EMAIL_FROM=notifications@example.comFCM_SERVER_KEY=
+SMS continues to use SMS_TO_API_KEY. If RESEND_API_KEY or FCM_SERVER_KEY are missing, Email and Push log to console instead of sending.

@@ -1,0 +1,41 @@
+Implement analytics.
+
+Metrics:
+
+revenue by staff
+revenue by service
+customer retention
+busy hours
+daily bookings
+staff performance
+
+===== RESULT ======
+===== RESULT ======
+
+Summary of the analytics implementation:
+Analytics Implementation
+Endpoint
+Method	Endpoint	Auth	Description
+GET	/api/v1/analytics?businessId=&startDate=&endDate=	JWT + RBAC	Returns all analytics metrics
+Query Parameters
+businessId (required) – business UUID
+startDate (optional) – start of period (YYYY-MM-DD)
+endDate (optional) – end of period (YYYY-MM-DD). Default: today. If omitted, last 30 days are used.
+Metrics
+Metric	Description
+revenueByStaff	Revenue and booking count per staff (from SUCCEEDED payments)
+revenueByService	Revenue and booking count per service
+customerRetention	totalCustomers, repeatCustomers, retentionRate, newCustomers
+busyHours	Appointment count per hour (0–23)
+dailyBookings	Appointment count per date
+staffPerformance	Per staff: totalBookings, completedBookings, cancelledBookings, revenue, completionRate
+Response Shape
+{  "period": { "startDate": "2025-02-08", "endDate": "2025-03-08" },  "revenueByStaff": [    { "staffId": "...", "staffName": "John Doe", "revenue": 1250.5, "count": 25 }  ],  "revenueByService": [    { "serviceId": "...", "serviceName": "Haircut", "revenue": 800, "count": 40 }  ],  "customerRetention": {    "totalCustomers": 50,    "repeatCustomers": 15,    "retentionRate": 30,    "newCustomers": 35  },  "busyHours": [    { "hour": 9, "count": 5 },    { "hour": 10, "count": 12 }  ],  "dailyBookings": [    { "date": "2025-03-01", "count": 8 }  ],  "staffPerformance": [    {      "staffId": "...",      "staffName": "John Doe",      "totalBookings": 30,      "completedBookings": 28,      "cancelledBookings": 2,      "revenue": 1500,      "completionRate": 93.33    }  ]}
+Permissions
+analytics:read added to owner and manager roles.
+Run npm run prisma:seed to update roles if needed.
+Files Created
+src/analytics/analytics.service.ts – metric calculations
+src/analytics/analytics.controller.ts – GET endpoint
+src/analytics/analytics.module.ts – module wiring
+src/analytics/dto/analytics-query.dto.ts – query validation
