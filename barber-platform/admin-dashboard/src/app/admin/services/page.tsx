@@ -375,6 +375,7 @@ export default function AdminServicesPage() {
       price: Number(service.price),
       color: service.color || "#3B82F6",
       isActive: service.isActive,
+      branchId: service.branchId ?? selectedBranchId ?? "",
     });
     setEditing(service);
     setModal("edit");
