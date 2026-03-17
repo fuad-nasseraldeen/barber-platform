@@ -1,7 +1,21 @@
 declare global {
   interface Window {
     google?: {
-      maps: {
+      accounts?: {
+        id?: {
+          disableAutoSelect?: () => void;
+          initialize?: (opts: {
+            client_id: string;
+            nonce: string;
+            callback?: (res: { credential?: string }) => void;
+          }) => void;
+          renderButton?: (
+            el: HTMLElement,
+            opts?: { type?: string; theme?: string; size?: string; width?: number }
+          ) => void;
+        };
+      };
+      maps?: {
         places: {
           Autocomplete: new (
             input: HTMLInputElement,

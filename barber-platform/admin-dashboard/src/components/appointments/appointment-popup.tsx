@@ -23,7 +23,7 @@ export type AppointmentPopupAppointment = {
   startTime: string;
   endTime: string;
   status: string;
-  staff?: { id: string; firstName: string; lastName: string };
+  staff?: { id?: string; firstName: string; lastName: string };
   service: { name: string };
   customer: {
     id?: string;

@@ -3,12 +3,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { loadGoogleGsi } from "@/lib/gsi-loader";
 
-declare global {
-  interface Window {
-    google?: any;
-  }
-}
-
 export interface GoogleLoginResult {
   credential: string;
   nonce: string;
@@ -55,13 +49,14 @@ export function GoogleLoginButton({
   useEffect(() => {
     if (!scriptLoaded || !clientId || typeof window === "undefined") return;
     const g = window.google;
-    if (!g?.accounts?.id) return;
+    const id = g?.accounts?.id;
+    if (!id?.initialize) return;
 
     if (!initializedRef.current) {
       initializedRef.current = true;
       const nonce = crypto.randomUUID();
       nonceRef.current = nonce;
-      g.accounts.id.initialize({
+      id.initialize({
         client_id: clientId,
         nonce,
         callback: (res: { credential?: string }) => {
@@ -75,9 +70,9 @@ export function GoogleLoginButton({
     }
 
     const el = document.getElementById(buttonId);
-    if (el) {
+    if (el && id.renderButton) {
       el.innerHTML = "";
-      g.accounts.id.renderButton(el, {
+      id.renderButton(el, {
           type: "standard",
           theme: "outline",
           size: "large",

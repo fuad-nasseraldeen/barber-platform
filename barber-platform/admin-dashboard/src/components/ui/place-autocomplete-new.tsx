@@ -108,9 +108,9 @@ export function PlaceAutocompleteNew({
       if (!place?.geometry?.location) return;
 
       const formatted = place.formatted_address ?? "";
-      const loc = place.geometry.location;
-      const lat = typeof loc.lat === "function" ? loc.lat() : (loc as { lat: number }).lat;
-      const lng = typeof loc.lng === "function" ? loc.lng() : (loc as { lng: number }).lng;
+      const loc = place.geometry.location as { lat: number | (() => number); lng: number | (() => number) };
+      const lat = typeof loc.lat === "function" ? loc.lat() : loc.lat;
+      const lng = typeof loc.lng === "function" ? loc.lng() : loc.lng;
 
       let city = "";
       let street = "";

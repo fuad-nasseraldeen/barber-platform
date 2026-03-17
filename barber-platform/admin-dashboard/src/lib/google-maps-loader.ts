@@ -18,7 +18,7 @@ export async function loadGoogleMapsPlaces(): Promise<google.maps.PlacesLibrary>
   if (!optionsSet) {
     const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
     if (!key) throw new Error("NEXT_PUBLIC_GOOGLE_MAPS_KEY is not set");
-    setOptions({ apiKey: key, v: "weekly" });
+    setOptions({ key, v: "weekly" });
     optionsSet = true;
   }
 

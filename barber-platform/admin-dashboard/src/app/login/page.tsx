@@ -9,12 +9,6 @@ import { useTranslation } from "@/hooks/use-translation";
 import { GoogleLoginButton } from "@/components/auth/GoogleLoginButton";
 import { loadGoogleGsi } from "@/lib/gsi-loader";
 
-declare global {
-  interface Window {
-    google?: { accounts?: { id?: { disableAutoSelect?: () => void } } };
-  }
-}
-
 function getRedirectPath(redirectTo: "admin" | "staff" | "register-shop" | "register-staff"): string {
   switch (redirectTo) {
     case "admin":

@@ -5,7 +5,8 @@ import FullCalendar from "@fullcalendar/react";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import resourceTimeGridPlugin from "@fullcalendar/resource-timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
-import type { EventClickArg, DateClickArg } from "@fullcalendar/core";
+import type { EventClickArg } from "@fullcalendar/core";
+import type { DateClickArg } from "@fullcalendar/interaction";
 import type { EventInput } from "@fullcalendar/core";
 
 /** Customer color palette - same customer gets same color */
@@ -217,7 +218,14 @@ export function AppointmentFullCalendar({
     if (!isViewingToday) return;
     const api = calendarRef.current?.getApi();
     if (api) {
-      const timer = setTimeout(() => api.scrollToTime(new Date(), 0), 300);
+      const timer = setTimeout(() => {
+        const now = new Date();
+        const msFromMidnight =
+          now.getHours() * 3600000 +
+          now.getMinutes() * 60000 +
+          now.getSeconds() * 1000;
+        api.scrollToTime(msFromMidnight);
+      }, 300);
       return () => clearTimeout(timer);
     }
   }, [initialDate, isViewingToday]);
