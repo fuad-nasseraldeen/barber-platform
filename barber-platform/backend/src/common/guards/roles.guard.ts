@@ -5,19 +5,23 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { PrismaService } from '../../prisma/prisma.service';
 
 export const ROLES_KEY = 'roles';
 export const PERMISSIONS_KEY = 'permissions';
 
+/** Populated from JWT in JwtStrategy — no DB in guard. */
+export interface JwtUserContext {
+  id: string;
+  businessId?: string;
+  role?: string;
+  permissions?: string[];
+}
+
 @Injectable()
 export class RolesGuard implements CanActivate {
-  constructor(
-    private reflector: Reflector,
-    private prisma: PrismaService,
-  ) {}
+  constructor(private reflector: Reflector) {}
 
-  async canActivate(context: ExecutionContext): Promise<boolean> {
+  canActivate(context: ExecutionContext): boolean {
     const requiredRoles = this.reflector.getAllAndOverride<string[]>(ROLES_KEY, [
       context.getHandler(),
       context.getClass(),
@@ -32,75 +36,26 @@ export class RolesGuard implements CanActivate {
     }
 
     const request = context.switchToHttp().getRequest();
-    const user = request.user;
+    const user = request.user as JwtUserContext | undefined;
     if (!user?.id) {
       throw new ForbiddenException('Unauthorized');
     }
 
-    const businessId =
-      request.params?.businessId ||
-      request.body?.businessId ||
+    const jwtBiz = user.businessId;
+    const fromRequest =
+      request.params?.businessId ??
+      request.body?.businessId ??
       request.query?.businessId;
-    const businessSlug = request.params?.slug;
-    const paramId = request.params?.id;
-    const staffId = request.body?.staffId || paramId;
 
-    let business: { id: string } | null = null;
-    if (businessId) {
-      business = await this.prisma.business.findUnique({
-        where: { id: businessId, deletedAt: null },
-        select: { id: true },
-      });
-    }
-    if (!business && businessSlug) {
-      business = await this.prisma.business.findUnique({
-        where: { slug: businessSlug, deletedAt: null },
-        select: { id: true },
-      });
-    }
-    if (!business && paramId) {
-      business = await this.prisma.business.findUnique({
-        where: { id: paramId, deletedAt: null },
-        select: { id: true },
-      });
-    }
-    if (!business && staffId) {
-      const staff = await this.prisma.staff.findUnique({
-        where: { id: staffId, deletedAt: null },
-        select: { businessId: true },
-      });
-      if (staff) {
-        business = await this.prisma.business.findUnique({
-          where: { id: staff.businessId, deletedAt: null },
-          select: { id: true },
-        });
-      }
+    if (fromRequest && jwtBiz && fromRequest !== jwtBiz) {
+      throw new ForbiddenException('Cross-business access denied');
     }
 
-    if (!business) {
-      throw new ForbiddenException('Business not found');
-    }
-
-    const membership = await this.prisma.businessUser.findUnique({
-      where: {
-        businessId_userId: { businessId: business.id, userId: user.id },
-      },
-      include: {
-        role: {
-          include: {
-            rolePermissions: { include: { permission: true } },
-          },
-        },
-      },
-    });
-
-    if (!membership || !membership.isActive) {
-      throw new ForbiddenException('You do not have access to this business');
-    }
+    const permissions = user.permissions ?? [];
+    const roleSlug = user.role;
 
     if (requiredRoles?.length) {
-      const roleSlug = membership.role.slug;
-      if (!requiredRoles.includes(roleSlug)) {
+      if (!roleSlug || !requiredRoles.includes(roleSlug)) {
         throw new ForbiddenException(
           `Required role: ${requiredRoles.join(' or ')}`,
         );
@@ -108,21 +63,14 @@ export class RolesGuard implements CanActivate {
     }
 
     if (requiredPermissions?.length) {
-      const userPermissions = membership.role.rolePermissions.map(
-        (rp) => rp.permission.slug,
-      );
-      const hasAll = requiredPermissions.every((p) =>
-        userPermissions.includes(p),
-      );
-      if (!hasAll) {
+      const hasAny = requiredPermissions.some((p) => permissions.includes(p));
+      if (!hasAny) {
         throw new ForbiddenException(
-          `Required permission: ${requiredPermissions.join(', ')}`,
+          `Required permission: ${requiredPermissions.join(' or ')}`,
         );
       }
     }
 
-    request.businessMembership = membership;
-    request.businessId = business.id;
     return true;
   }
 }

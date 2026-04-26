@@ -30,12 +30,6 @@ export class UsersService {
     });
   }
 
-  async findById(id: string): Promise<User | null> {
-    return this.prisma.user.findUnique({
-      where: { id, deletedAt: null },
-    });
-  }
-
   async findByGoogleId(googleId: string): Promise<User | null> {
     return this.prisma.user.findFirst({
       where: {

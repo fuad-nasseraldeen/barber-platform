@@ -1,17 +1,25 @@
 import {
   IsString,
   IsOptional,
-  IsEmail,
   IsUUID,
   IsDateString,
   IsIn,
   Matches,
   MaxLength,
+  Allow,
 } from 'class-validator';
 
 export class UpdateCustomerDto {
   @IsUUID()
   businessId: string;
+
+  /** Legacy key; ignored — email is not updated via this API. */
+  @Allow()
+  email?: unknown;
+
+  /** Accepted and ignored (for future admin flows). Not validated; not persisted. */
+  @Allow()
+  adminReserved?: unknown;
 
   @IsOptional()
   @IsString()
@@ -22,10 +30,6 @@ export class UpdateCustomerDto {
   @IsString()
   @MaxLength(100)
   lastName?: string;
-
-  @IsOptional()
-  @IsEmail()
-  email?: string;
 
   @IsOptional()
   @IsString()

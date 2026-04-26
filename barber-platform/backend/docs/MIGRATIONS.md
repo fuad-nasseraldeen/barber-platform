@@ -6,7 +6,7 @@ This guide explains how to add and apply migrations correctly in the barber plat
 
 ## Prerequisites
 
-- `DATABASE_URL` set in `.env` or `.env.local`
+- `DATABASE_URL` and **`DIRECT_URL`** in `.env` when using Supabase **pooler** for `DATABASE_URL`: set `DIRECT_URL` to the **Direct connection** string from the dashboard (`db.*.supabase.co:5432`). Prisma runs migrations against `directUrl`, not the pooler (avoids P1002 advisory lock timeouts).
 - Database accessible (local or remote)
 - Stop the backend server before running migrations (avoids EPERM/lock issues on Windows)
 

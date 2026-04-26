@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 import { enableRedis } from '../common/redis-config';
+import { logRedisConnectionConfig, resolveRedisConnection } from '../common/redis-connection';
+import { bullmqSafeJobId } from '../common/bullmq-job-id';
 import { NotificationJobPayload } from './notification.types';
 
 /** No-op queue when Redis disabled */
@@ -25,14 +27,11 @@ export class NotificationService {
   }
 
   private getConnection() {
-    const url = this.config.get('REDIS_URL');
-    if (url) return { url, retryStrategy: () => null };
-    return {
-      host: this.config.get('REDIS_HOST', 'localhost'),
-      port: parseInt(this.config.get('REDIS_PORT', '6379'), 10),
-      password: this.config.get('REDIS_PASSWORD') || undefined,
+    const resolved = resolveRedisConnection(this.config, 'notification.service', {
       retryStrategy: () => null,
-    };
+    });
+    logRedisConnectionConfig(resolved);
+    return resolved.options;
   }
 
   /**
@@ -260,7 +259,7 @@ export class NotificationService {
       } as NotificationJobPayload & { appointmentId: string; scheduledFor: string },
       {
         delay,
-        jobId: `reminder:${appointmentId}`,
+        jobId: bullmqSafeJobId('reminder', appointmentId),
         removeOnComplete: { count: 100 },
       },
     );

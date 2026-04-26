@@ -10,6 +10,7 @@ generator client {
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
+  // Migrations + shadow DB use this. With Supabase pooler on DATABASE_URL, set DIRECT_URL = Dashboard "Direct connection".
   directUrl = env("DIRECT_URL")
 }
 
@@ -41,6 +42,7 @@ model User {
   refreshTokens  RefreshToken[]
   notifications  Notification[]
   userSettings   UserSettings?
+  slotHolds      SlotHold[]
 
   @@map("users")
 }
@@ -49,7 +51,7 @@ model UserSettings {
   id        String   @id @default(uuid())
   userId    String   @unique
   theme    String   @default("dark")
-  locale   String   @default("en")
+  locale   String   @default("he")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -84,7 +86,7 @@ model Business {
   slug      String   @unique
   type      BusinessType @default(BARBER_SHOP)
   timezone  String   @default("UTC")
-  locale    String   @default("en")
+  locale    String   @default("he")
   currency  String   @default("USD")
   stripeCustomerId     String?
   stripeSubscriptionId String?
@@ -106,8 +108,9 @@ model Business {
   serviceCategories ServiceCategory[]
   staff           Staff[]
   customers       Customer[]
-  appointments    Appointment[]
-  waitlists       Waitlist[]
+  appointments         Appointment[]
+  bookingIdempotencies BookingIdempotency[]
+  waitlists            Waitlist[]
   payments        Payment[]
   notifications   Notification[]
   auditLogs       AuditLog[]
@@ -118,6 +121,9 @@ model Business {
   dailyServiceStats DailyServiceStats[]
   customerVisits    CustomerVisit[]
   automationRules   AutomationRule[]
+  availabilitySlots AvailabilitySlot[]
+  slotHolds        SlotHold[]
+  timeSlots        TimeSlot[]
 
   @@map("businesses")
 }
@@ -354,6 +360,7 @@ model Service {
   bufferAfterMinutes   Int      @default(0)
   isActive             Boolean  @default(true)
   sortOrder            Int      @default(0)
+  blockAllStaff        Boolean  @default(false)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
   deletedAt            DateTime?
@@ -362,10 +369,13 @@ model Service {
   branch        Branch?        @relation(fields: [branchId], references: [id], onDelete: SetNull)
   category      ServiceCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   staffServices StaffService[]
+  staffBlocks   ServiceStaffBlock[]
   appointments  Appointment[]
   waitlists     Waitlist[]
   dailyServiceStats DailyServiceStats[]
   customerVisits CustomerVisit[]
+  availabilitySlots AvailabilitySlot[]
+  slotHolds         SlotHold[]
 
   @@unique([businessId, branchId, slug])
   @@index([businessId])
@@ -407,15 +417,20 @@ model Staff {
   location   Location?   @relation(fields: [locationId], references: [id], onDelete: SetNull)
   user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
   staffServices         StaffService[]
-  staffWorkingHours     StaffWorkingHours[]
-  staffBreaks           StaffBreak[]
-  staffBreakExceptions  StaffBreakException[]
+  serviceStaffBlocks    ServiceStaffBlock[]
+  staffWorkingHours              StaffWorkingHours[]
+  staffWorkingHoursDateOverrides StaffWorkingHoursDateOverride[]
+  staffBreaks                   StaffBreak[]
+  staffBreakExceptions          StaffBreakException[]
   staffTimeOff          StaffTimeOff[]
   appointments         Appointment[]
   availabilityCache    StaffAvailabilityCache[]
   waitlists            Waitlist[]
   dailyStaffStats      DailyStaffStats[]
   customerVisits       CustomerVisit[]
+  availabilitySlots   AvailabilitySlot[]
+  slotHolds           SlotHold[]
+  timeSlots           TimeSlot[]
 
   @@index([businessId])
   @@index([branchId])
@@ -428,7 +443,7 @@ model StaffService {
   id               String   @id @default(uuid())
   staffId          String
   serviceId        String
-  durationMinutes Int      @default(30)
+  durationMinutes Int      @default(1)
   price            Decimal  @db.Decimal(10, 2) @default(0)
   allowBooking     Boolean  @default(true)
   popupMessage     String?
@@ -443,6 +458,22 @@ model StaffService {
   @@index([staffId])
   @@index([serviceId])
   @@map("staff_services")
+}
+
+// Staff blocked from attaching this catalog service (self-service / my services).
+model ServiceStaffBlock {
+  id        String   @id @default(uuid())
+  serviceId String
+  staffId   String
+  createdAt DateTime @default(now())
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  staff   Staff   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@unique([serviceId, staffId])
+  @@index([serviceId])
+  @@index([staffId])
+  @@map("service_staff_blocks")
 }
 
 // Recurring weekly schedule (e.g., Mon 09:00-17:00)
@@ -463,6 +494,25 @@ model StaffWorkingHours {
   @@index([staffId])
   @@index([branchId])
   @@map("staff_working_hours")
+}
+
+/// Per-calendar-day working window (optional). Overrides the weekly row for that local date when
+/// `isClosed` is false and `startTime`/`endTime` are set; when `isClosed`, the day has no working hours.
+model StaffWorkingHoursDateOverride {
+  id        String   @id @default(uuid())
+  staffId   String
+  date      DateTime @db.Date
+  isClosed  Boolean  @default(false)
+  startTime String?
+  endTime   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@unique([staffId, date])
+  @@index([staffId, date])
+  @@map("staff_working_hours_date_overrides")
 }
 
 // Breaks within a shift (e.g., lunch 12:00-13:00) - weekly recurring
@@ -487,14 +537,16 @@ model StaffBreak {
 
 // Date-specific breaks (one-time or date range) - multiple per day allowed
 model StaffBreakException {
-  id        String   @id @default(uuid())
+  id        String                   @id @default(uuid())
   staffId   String
   branchId  String?
-  date      DateTime @db.Date
+  date      DateTime                 @db.Date
   startTime String
   endTime   String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  /// BREAK = normal break (orange); TIME_BLOCK = admin "block time" / gray striping
+  kind      StaffBreakExceptionKind  @default(BREAK)
+  createdAt DateTime                 @default(now())
+  updatedAt DateTime                 @updatedAt
 
   staff  Staff   @relation(fields: [staffId], references: [id], onDelete: Cascade)
   branch Branch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
@@ -503,6 +555,11 @@ model StaffBreakException {
   @@index([staffId, date])
   @@index([branchId])
   @@map("staff_break_exceptions")
+}
+
+enum StaffBreakExceptionKind {
+  BREAK
+  TIME_BLOCK
 }
 
 // Vacation request status
@@ -572,6 +629,69 @@ model StaffAvailabilityCache {
   @@map("staff_availability_cache")
 }
 
+/// Precomputed time slots — O(1) availability reads. One row per bookable start time per staff per day.
+/// Status: free → held → booked. UNIQUE(staff_id, date, start_time) = concurrency guard on UPDATE WHERE status='free'.
+model TimeSlot {
+  id              String   @id @default(uuid()) @map("id")
+  businessId      String   @map("business_id")
+  staffId         String   @map("staff_id")
+  date            DateTime @db.Date
+  startTime       String   @map("start_time")
+  endMin          Int      @map("end_min")
+  durationMinutes Int      @map("duration_minutes")
+  status          String   @default("free")
+  holdId          String?  @map("hold_id")
+  appointmentId   String?  @map("appointment_id")
+  updatedAt       DateTime @default(now()) @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  staff    Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@unique([staffId, date, startTime])
+  @@index([staffId, date, status])
+  @@index([staffId, date, endMin])
+  @@map("time_slots")
+}
+
+/// Precomputed bookable intervals — read path is a single indexed query (status = AVAILABLE).
+/// DB: EXCLUDE (staffId, date, int4range(startMinute,endMinute)) prevents overlapping rows (migration 20260325150000).
+enum AvailabilitySlotStatus {
+  AVAILABLE
+  HELD
+  BOOKED
+}
+
+model AvailabilitySlot {
+  id              String                 @id @default(uuid())
+  businessId      String
+  staffId         String
+  serviceId       String
+  date            DateTime               @db.Date
+  startTime       String // HH:mm — bookable start for this service
+  endTime         String // HH:mm — interval end (same calendar day; exclusive-style overlap uses minutes)
+  startMinute     Int
+  endMinute       Int
+  status          AvailabilitySlotStatus @default(AVAILABLE)
+  heldSessionId   String?
+  heldUntil       DateTime?
+  appointmentId   String?
+  updatedAt       DateTime               @updatedAt
+
+  business    Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  staff       Staff        @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  service     Service      @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  @@unique([businessId, staffId, serviceId, date, startTime])
+  @@index([businessId, date, staffId])
+  @@index([businessId, staffId, date, status])
+  @@index([staffId, date])
+  @@index([staffId, date, startTime, status])
+  @@index([status])
+  @@index([appointmentId])
+  @@map("availability_slots")
+}
+
 // =============================================================================
 // CUSTOMERS
 // =============================================================================
@@ -604,6 +724,7 @@ model Customer {
   payments      Payment[]
   loyaltyPoints LoyaltyPoints?
   customerNotes CustomerNote[]
+  slotHolds     SlotHold[]
 
   @@unique([businessId, email])
   @@index([businessId])
@@ -658,7 +779,10 @@ model Appointment {
   startTime       DateTime
   endTime         DateTime
   status          AppointmentStatus @default(PENDING)
-  slotKey         String          @unique // businessId:staffId:YYYY-MM-DD:HH:mm
+  /// Denormalized label (business-local date + start HH:mm). NOT unique — overlaps are enforced by EXCLUDE + hold ranges.
+  slotKey         String
+  idempotencyKey  String? // optional; unique per business when set (retries)
+  slotHoldId      String?         @unique // FK to slot_holds; set on create-from-hold
   notes           String?
   internalNotes   String?
   paymentId       String?
@@ -673,10 +797,14 @@ model Appointment {
   customer Customer   @relation(fields: [customerId], references: [id], onDelete: Restrict)
   staff    Staff       @relation(fields: [staffId], references: [id], onDelete: Restrict)
   service  Service    @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  slotHold SlotHold?  @relation(fields: [slotHoldId], references: [id], onDelete: Restrict)
   payment  Payment?
   appointmentSlots AppointmentSlot[]
   customerVisit  CustomerVisit?
+  bookingIdempotencies BookingIdempotency[]
+  availabilitySlotRows AvailabilitySlot[]
 
+  @@unique([businessId, idempotencyKey])
   @@index([businessId])
   @@index([branchId])
   @@index([businessId, startTime])
@@ -686,6 +814,74 @@ model Appointment {
   @@index([staffId, startTime, endTime])
   @@index([slotKey])
   @@map("appointments")
+}
+
+/// Short-lived reservation before confirm (scheduling v2). Exclusion constraint in DB prevents overlapping holds per staff.
+model SlotHold {
+  id          String   @id @default(uuid())
+  businessId  String   @map("business_id")
+  staffId     String   @map("staff_id")
+  customerId  String   @map("customer_id")
+  serviceId   String   @map("service_id")
+  startTime   DateTime @map("start_time")
+  endTime     DateTime @map("end_time")
+  userId      String   @map("user_id")
+  expiresAt   DateTime @map("expires_at")
+  consumedAt  DateTime? @map("consumed_at") // set when hold is converted to appointment (row retained)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  staff    Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  service  Service  @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  appointment Appointment?
+
+  @@index([staffId])
+  @@index([expiresAt])
+  @@index([userId])
+  // Range + TTL filter for availability (staff, time overlap, not expired)
+  @@index([staffId, startTime, endTime, expiresAt])
+  @@map("slot_holds")
+}
+
+/// Idempotency for booking operations. Prevents duplicate bookings from retries/double-clicks.
+model BookingIdempotency {
+  id              String   @id @default(uuid())
+  businessId      String
+  idempotencyKey  String
+  appointmentId   String
+  createdAt       DateTime @default(now())
+
+  business    Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, idempotencyKey])
+  @@index([businessId])
+  @@map("booking_idempotency")
+}
+
+/// Async projection queue for booking-side read models (Phase 1: reschedule only).
+model BookingProjectionOutbox {
+  id            String   @id @default(uuid())
+  eventType     String   @map("event_type")
+  status        String   @default("PENDING")
+  businessId    String   @map("business_id")
+  appointmentId String   @map("appointment_id")
+  payload       Json
+  attempts      Int      @default(0)
+  availableAt   DateTime @default(now()) @map("available_at")
+  lockedAt      DateTime? @map("locked_at")
+  lockedBy      String?  @map("locked_by")
+  processedAt   DateTime? @map("processed_at")
+  lastError     String?  @map("last_error")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([status, availableAt, createdAt])
+  @@index([eventType, status, availableAt])
+  @@index([businessId, createdAt])
+  @@map("booking_projection_outbox")
 }
 
 enum AppointmentStatus {

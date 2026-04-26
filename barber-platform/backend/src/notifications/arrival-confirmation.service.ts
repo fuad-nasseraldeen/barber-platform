@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { SmsService } from '../sms/sms.service';
 
@@ -9,6 +9,8 @@ type SettingsShape = {
 
 @Injectable()
 export class ArrivalConfirmationService {
+  private readonly log = new Logger(ArrivalConfirmationService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly sms: SmsService,
@@ -19,17 +21,30 @@ export class ArrivalConfirmationService {
    * Replaces all template placeholders with real appointment data.
    */
   async sendIfEnabled(appointmentId: string): Promise<void> {
-    const apt = await this.prisma.appointment.findUnique({
-      where: { id: appointmentId },
-      include: {
-        customer: { select: { firstName: true, lastName: true, phone: true, gender: true } },
-        staff: { select: { firstName: true, lastName: true } },
-        service: { select: { name: true } },
-        branch: { select: { name: true, address: true, street: true, city: true } },
-        location: { select: { name: true, address: true, city: true } },
-        business: { select: { name: true, settings: true, locale: true } },
-      },
-    });
+    let apt;
+    try {
+      apt = await this.prisma.appointment.findUnique({
+        where: { id: appointmentId },
+        include: {
+          customer: { select: { firstName: true, lastName: true, phone: true, gender: true } },
+          staff: { select: { firstName: true, lastName: true } },
+          service: { select: { name: true } },
+          branch: { select: { name: true, address: true, street: true, city: true } },
+          location: { select: { name: true, address: true, city: true } },
+          business: { select: { name: true, settings: true, locale: true } },
+        },
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // High concurrency + Supabase Session pooler often exhausts connections; booking already succeeded.
+      if (msg.includes('MaxClientsInSessionMode') || msg.includes('max clients reached')) {
+        this.log.warn(
+          `Arrival SMS skipped (DB pool exhausted). Use Transaction pooler (port 6543) or lower load. id=${appointmentId}`,
+        );
+        return;
+      }
+      throw e;
+    }
 
     if (!apt?.customer?.phone) return;
 

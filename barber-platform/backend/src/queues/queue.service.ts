@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 import { enableRedis } from '../common/redis-config';
+import { logRedisConnectionConfig, resolveRedisConnection } from '../common/redis-connection';
 
 /** No-op queue when Redis disabled - add() resolves immediately, no jobs are processed */
 function createNoOpQueue(): Queue {
@@ -13,36 +14,32 @@ function createNoOpQueue(): Queue {
 
 @Injectable()
 export class QueueService {
-  readonly availabilityQueue: Queue;
   readonly notificationQueue: Queue;
   readonly analyticsQueue: Queue;
   readonly automationQueue: Queue;
 
   constructor(private config: ConfigService) {
     if (!enableRedis) {
-      this.availabilityQueue = createNoOpQueue();
       this.notificationQueue = createNoOpQueue();
       this.analyticsQueue = createNoOpQueue();
       this.automationQueue = createNoOpQueue();
       return;
     }
 
-    const connection = this.getConnection();
+    const notificationConnection = this.getConnection('queue.notification');
+    const analyticsConnection = this.getConnection('queue.analytics');
+    const automationConnection = this.getConnection('queue.automation');
 
-    this.availabilityQueue = new Queue('availability', { connection });
-    this.notificationQueue = new Queue('notification', { connection });
-    this.analyticsQueue = new Queue('analytics', { connection });
-    this.automationQueue = new Queue('automation', { connection });
+    this.notificationQueue = new Queue('notification', { connection: notificationConnection });
+    this.analyticsQueue = new Queue('analytics', { connection: analyticsConnection });
+    this.automationQueue = new Queue('automation', { connection: automationConnection });
   }
 
-  private getConnection() {
-    const url = this.config.get('REDIS_URL');
-    if (url) return { url, retryStrategy: () => null };
-    return {
-      host: this.config.get('REDIS_HOST', 'localhost'),
-      port: this.config.get('REDIS_PORT', 6379),
-      password: this.config.get('REDIS_PASSWORD') || undefined,
+  private getConnection(scope: 'queue.notification' | 'queue.analytics' | 'queue.automation') {
+    const resolved = resolveRedisConnection(this.config, scope, {
       retryStrategy: () => null,
-    };
+    });
+    logRedisConnectionConfig(resolved);
+    return resolved.options;
   }
 }

@@ -13,6 +13,10 @@ export interface TokenPayload {
   email?: string;
   phone?: string;
   type: 'access' | 'refresh';
+  businessId?: string;
+  role?: string;
+  /** Mirrors role permissions at issue time; guards use this (no per-request DB). */
+  permissions?: string[];
 }
 
 export type RedirectTo = 'admin' | 'staff' | 'register-shop' | 'register-staff';
@@ -21,7 +25,13 @@ export interface AuthTokens {
   accessToken: string;
   refreshToken: string;
   expiresIn: number;
-  user: Omit<User, 'passwordHash'> & { businessId?: string; role?: string; name?: string; staffId?: string };
+  user: Omit<User, 'passwordHash'> & {
+    businessId?: string;
+    role?: string;
+    name?: string;
+    staffId?: string;
+    permissions?: string[];
+  };
   redirectTo: RedirectTo;
 }
 
@@ -132,11 +142,17 @@ export class AuthService {
   }
 
   private async generateTokens(user: User): Promise<AuthTokens> {
+    const { passwordHash: _, ...userWithoutPassword } = user;
+    const { enriched, redirectTo } = await this.enrichUserWithBusiness(userWithoutPassword);
+
     const payload: TokenPayload = {
       sub: user.id,
       email: user.email ?? undefined,
       phone: user.phone ?? undefined,
       type: 'access',
+      businessId: enriched.businessId,
+      role: enriched.role,
+      permissions: enriched.permissions,
     };
 
     const expiresIn = this.config.get('JWT_EXPIRES_IN', '15m');
@@ -144,7 +160,7 @@ export class AuthService {
 
     const accessToken = this.jwt.sign(payload, {
       expiresIn,
-      secret: this.config.get('JWT_SECRET'),
+      secret: this.config.getOrThrow<string>('JWT_SECRET'),
     });
 
     const refreshToken = crypto.randomBytes(32).toString('hex');
@@ -161,8 +177,6 @@ export class AuthService {
       },
     });
 
-    const { passwordHash: _, ...userWithoutPassword } = user;
-    const { enriched, redirectTo } = await this.enrichUserWithBusiness(userWithoutPassword);
     return {
       accessToken,
       refreshToken,
@@ -172,20 +186,44 @@ export class AuthService {
     };
   }
 
+  private permissionSlugsFromRole(role: {
+    rolePermissions: { permission: { slug: string } }[];
+  }): string[] {
+    return role.rolePermissions.map((rp) => rp.permission.slug);
+  }
+
+  private async loadSystemRolePermissionSlugs(slug: string): Promise<string[]> {
+    const role = await this.prisma.role.findFirst({
+      where: { slug, businessId: null, isSystem: true },
+      include: { rolePermissions: { include: { permission: true } } },
+    });
+    return role ? this.permissionSlugsFromRole(role) : [];
+  }
+
   private async enrichUserWithBusiness(
     user: Omit<User, 'passwordHash'>,
   ): Promise<{
-    enriched: Omit<User, 'passwordHash'> & { businessId?: string; role?: string; name?: string; staffId?: string };
+    enriched: Omit<User, 'passwordHash'> & {
+      businessId?: string;
+      role?: string;
+      name?: string;
+      staffId?: string;
+      permissions?: string[];
+    };
     redirectTo: RedirectTo;
   }> {
     const name = [user.firstName, user.lastName].filter(Boolean).join(' ') || user.email || user.phone || undefined;
     const base = { ...user, name };
 
-    // 1. Admin/Manager: has BusinessUser with owner or manager role
     const bu = await this.prisma.businessUser.findFirst({
       where: { userId: user.id, isActive: true },
-      include: { role: true },
+      include: {
+        role: {
+          include: { rolePermissions: { include: { permission: true } } },
+        },
+      },
     });
+
     if (bu && ['owner', 'manager'].includes(bu.role.slug)) {
       const ownerStaff = await this.prisma.staff.findFirst({
         where: { userId: user.id, businessId: bu.businessId, deletedAt: null },
@@ -196,23 +234,29 @@ export class AuthService {
           businessId: bu.businessId,
           role: bu.role.slug,
           staffId: ownerStaff?.id,
+          permissions: this.permissionSlugsFromRole(bu.role),
         },
         redirectTo: 'admin',
       };
     }
 
-    // 2. Staff: has Staff record linked to user
     const staff = await this.prisma.staff.findFirst({
       where: { userId: user.id, deletedAt: null },
     });
     if (staff) {
+      const permissions = await this.loadSystemRolePermissionSlugs('staff');
       return {
-        enriched: { ...base, businessId: staff.businessId, role: 'staff', staffId: staff.id },
+        enriched: {
+          ...base,
+          businessId: staff.businessId,
+          role: 'staff',
+          staffId: staff.id,
+          permissions,
+        },
         redirectTo: 'staff',
       };
     }
 
-    // 3. Invited staff: has pending StaffInvite by phone, needs to complete registration
     if (user.phone) {
       const staffInvite = await this.prisma.staffInvite.findFirst({
         where: {
@@ -224,17 +268,24 @@ export class AuthService {
       });
       if (staffInvite) {
         return {
-          enriched: { ...base, businessId: staffInvite.businessId },
+          enriched: { ...base, businessId: staffInvite.businessId, permissions: [] },
           redirectTo: 'register-staff',
         };
       }
     }
 
-    // 4. New user: redirect to shop registration
     if (bu) {
-      return { enriched: { ...base, businessId: bu.businessId, role: bu.role.slug }, redirectTo: 'register-shop' };
+      return {
+        enriched: {
+          ...base,
+          businessId: bu.businessId,
+          role: bu.role.slug,
+          permissions: this.permissionSlugsFromRole(bu.role),
+        },
+        redirectTo: 'register-shop',
+      };
     }
-    return { enriched: base, redirectTo: 'register-shop' };
+    return { enriched: { ...base, permissions: [] }, redirectTo: 'register-shop' };
   }
 
   private parseExpiry(expiry: string): number {

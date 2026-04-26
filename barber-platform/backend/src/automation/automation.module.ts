@@ -8,6 +8,7 @@ import { QueuesModule } from '../queues/queues.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { SmsModule } from '../sms/sms.module';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { AvailabilityModule } from '../availability/availability.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
     forwardRef(() => QueuesModule),
     NotificationsModule,
     SmsModule,
+    AvailabilityModule,
   ],
   controllers: [AutomationController],
   providers: [

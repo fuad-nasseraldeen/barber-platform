@@ -4,6 +4,7 @@ import { ServicesService } from './services.service';
 import { RolesGuard } from '../common/guards/roles.guard';
 
 @Module({
+  imports: [],
   controllers: [ServicesController],
   providers: [ServicesService, RolesGuard],
   exports: [ServicesService],

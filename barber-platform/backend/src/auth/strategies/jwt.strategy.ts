@@ -2,21 +2,22 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
-import { UsersService } from '../../users/users.service';
 
 export interface JwtPayload {
   sub: string;
   email?: string;
   phone?: string;
   type: string;
+  /** Set on access tokens at login (see auth.service TokenPayload). */
+  businessId?: string;
+  role?: string;
+  /** Permission slugs embedded at token issue time — RolesGuard reads these (no DB). */
+  permissions?: string[];
 }
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
-  constructor(
-    private readonly config: ConfigService,
-    private readonly users: UsersService,
-  ) {
+  constructor(private readonly config: ConfigService) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
@@ -24,14 +25,17 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     });
   }
 
-  async validate(payload: JwtPayload) {
+  validate(payload: JwtPayload) {
     if (payload.type !== 'access') {
       throw new UnauthorizedException('Invalid token type');
     }
-    const user = await this.users.findById(payload.sub);
-    if (!user || user.deletedAt) {
-      throw new UnauthorizedException('User not found');
-    }
-    return user;
+    return {
+      id: payload.sub,
+      email: payload.email,
+      phone: payload.phone,
+      businessId: payload.businessId,
+      role: payload.role,
+      permissions: payload.permissions ?? [],
+    };
   }
 }

@@ -13,6 +13,7 @@ import { ServicesService } from './services.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles, Permissions } from '../common/decorators/roles.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { CreateServiceDto } from './dto/create-service.dto';
 import { UpdateServiceDto } from './dto/update-service.dto';
 import { DeleteServiceDto } from './dto/delete-service.dto';
@@ -20,6 +21,7 @@ import { ReorderServicesDto } from './dto/reorder-services.dto';
 import { AssignStaffToServiceDto } from './dto/assign-staff.dto';
 import { ListServicesQueryDto } from './dto/list-services.dto';
 import { DuplicateServiceDto } from './dto/duplicate-service.dto';
+import { UpdateServiceBlocksDto } from './dto/update-service-blocks.dto';
 
 @Controller('services')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -40,8 +42,11 @@ export class ServicesController {
 
   @Get(':id')
   @Permissions('service:read', 'business:read')
-  async findById(@Param('id') id: string) {
-    return this.services.findById(id);
+  async findById(
+    @Param('id') id: string,
+    @CurrentUser('businessId') viewerBusinessId: string | undefined,
+  ) {
+    return this.services.findById(id, viewerBusinessId);
   }
 
   @Post(':id/duplicate')
@@ -86,6 +91,13 @@ export class ServicesController {
     @Body() dto: AssignStaffToServiceDto,
   ) {
     return this.services.assignStaff(id, dto.businessId, dto);
+  }
+
+  @Patch(':id/blocks')
+  @Roles('owner', 'manager')
+  @Permissions('service:update', 'service:manage')
+  async updateBlocks(@Param('id') id: string, @Body() dto: UpdateServiceBlocksDto) {
+    return this.services.updateAvailabilityBlocks(id, dto.businessId, dto);
   }
 
   @Delete(':id')

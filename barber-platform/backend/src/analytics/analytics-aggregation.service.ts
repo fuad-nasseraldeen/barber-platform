@@ -1,13 +1,18 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
+import { isSchedulerPrimaryInstance } from '../common/scheduler-instance';
 
 @Injectable()
 export class AnalyticsAggregationService {
+  private readonly logger = new Logger(AnalyticsAggregationService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   @Cron('0 1 * * *') // 1 AM daily
   async aggregateDailyStats() {
+    if (!isSchedulerPrimaryInstance()) return;
+    try {
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     yesterday.setHours(0, 0, 0, 0);
@@ -21,6 +26,11 @@ export class AnalyticsAggregationService {
 
     for (const b of businesses) {
       await this.aggregateBusinessDay(b.id, yesterday, dayEnd);
+    }
+    } catch (err) {
+      this.logger.warn(
+        `aggregateDailyStats skipped: ${err instanceof Error ? err.message : err}`,
+      );
     }
   }
 

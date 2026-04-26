@@ -3,22 +3,25 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
+import { randomUUID } from 'crypto';
+import { isSchedulerPrimaryInstance } from '../common/scheduler-instance';
 import { PrismaService } from '../prisma/prisma.service';
-import { SlotLockService } from '../booking/slot-lock.service';
 import { NotificationService } from '../notifications/notification.service';
-import { CACHE_TTL } from '../redis/cache.service';
 import { CreateWaitlistDto } from './dto/create-waitlist.dto';
 import { UpdateWaitlistDto } from './dto/update-waitlist.dto';
+import { ConvertWaitlistDto } from './dto/convert-waitlist.dto';
 
 const WAITLIST_RESERVE_MINUTES = 15;
 
 @Injectable()
 export class WaitlistService {
+  private readonly logger = new Logger(WaitlistService.name);
+
   constructor(
     private readonly prisma: PrismaService,
-    private readonly slotLock: SlotLockService,
     private readonly notifications: NotificationService,
   ) {}
 
@@ -104,7 +107,7 @@ export class WaitlistService {
     });
   }
 
-  async findById(id: string) {
+  async findById(id: string, viewerBusinessId?: string) {
     const wl = await this.prisma.waitlist.findUnique({
       where: { id },
       include: {
@@ -115,6 +118,9 @@ export class WaitlistService {
       },
     });
     if (!wl) throw new NotFoundException('Waitlist entry not found');
+    if (viewerBusinessId && wl.businessId !== viewerBusinessId) {
+      throw new ForbiddenException('Waitlist does not belong to this business');
+    }
     return wl;
   }
 
@@ -154,9 +160,7 @@ export class WaitlistService {
 
   /**
    * Process a slot that became available (e.g. after cancellation).
-   * 1. Find matching waitlist entries (ACTIVE, by priority)
-   * 2. Notify next customer
-   * 3. Temporarily reserve slot (Redis lock)
+   * Picks next ACTIVE waitlist entry, marks NOTIFIED with expiry (opaque session id only).
    */
   async processSlotAvailable(params: {
     businessId: string;
@@ -167,20 +171,10 @@ export class WaitlistService {
   }): Promise<{ notified: boolean; waitlistId?: string; expiresAt?: Date }> {
     const { businessId, staffId, serviceId, date, startTime } = params;
 
-    const [service, staffService] = await Promise.all([
-      this.prisma.service.findUnique({
-        where: { id: serviceId, businessId, deletedAt: null },
-      }),
-      this.prisma.staffService.findUnique({
-        where: { staffId_serviceId: { staffId, serviceId } },
-      }),
-    ]);
+    const service = await this.prisma.service.findUnique({
+      where: { id: serviceId, businessId, deletedAt: null },
+    });
     if (!service) return { notified: false };
-    const duration = staffService?.durationMinutes ?? service.durationMinutes;
-    const totalMinutes =
-      duration +
-      (service.bufferBeforeMinutes ?? 0) +
-      (service.bufferAfterMinutes ?? 0);
 
     const next = await this.getNextWaitlistEntry(businessId, serviceId, staffId, date, startTime);
     if (!next) return { notified: false };
@@ -188,19 +182,7 @@ export class WaitlistService {
     const expiresAt = new Date();
     expiresAt.setMinutes(expiresAt.getMinutes() + WAITLIST_RESERVE_MINUTES);
 
-    const sessionId = `waitlist:${next.id}:${Date.now()}`;
-    const acquired = await this.slotLock.acquireLockForDuration(
-      staffId,
-      date,
-      startTime,
-      totalMinutes,
-      sessionId,
-      CACHE_TTL.WAITLIST_RESERVE,
-    );
-
-    if (!acquired.success) {
-      return { notified: false };
-    }
+    const sessionId = randomUUID();
 
     await this.prisma.waitlist.update({
       where: { id: next.id },
@@ -225,16 +207,32 @@ export class WaitlistService {
   }
 
   /**
-   * Get sessionId for a NOTIFIED waitlist entry (for confirm booking).
+   * NOTIFIED row must match the slot the client is converting (no Redis lock).
    */
-  async getNotifiedSessionId(waitlistId: string): Promise<string | null> {
+  async validateNotifiedSlotMatches(dto: ConvertWaitlistDto): Promise<boolean> {
     const wl = await this.prisma.waitlist.findUnique({
-      where: { id: waitlistId },
-      select: { notifiedSessionId: true, status: true, expiresAt: true },
+      where: { id: dto.waitlistId },
+      select: {
+        status: true,
+        expiresAt: true,
+        customerId: true,
+        serviceId: true,
+        notifiedStaffId: true,
+        notifiedDate: true,
+        notifiedStartTime: true,
+      },
     });
-    if (!wl || wl.status !== 'NOTIFIED' || !wl.notifiedSessionId) return null;
-    if (wl.expiresAt && new Date() > wl.expiresAt) return null;
-    return wl.notifiedSessionId;
+    if (!wl || wl.status !== 'NOTIFIED' || !wl.notifiedStaffId || !wl.notifiedStartTime) {
+      return false;
+    }
+    if (wl.expiresAt && new Date() > wl.expiresAt) return false;
+    if (wl.customerId !== dto.customerId) return false;
+    if (wl.serviceId !== dto.serviceId) return false;
+    const nd = new Date(wl.notifiedDate as Date | string).toISOString().slice(0, 10);
+    if (nd !== dto.date.slice(0, 10)) return false;
+    if (wl.notifiedStaffId !== dto.staffId) return false;
+    if (wl.notifiedStartTime !== dto.startTime) return false;
+    return true;
   }
 
   /**
@@ -253,7 +251,7 @@ export class WaitlistService {
   }
 
   /**
-   * Revert NOTIFIED to ACTIVE when reservation expires (release lock).
+   * Revert NOTIFIED to ACTIVE when reservation expires.
    */
   async revertExpiredNotified(waitlistId: string): Promise<void> {
     const wl = await this.prisma.waitlist.findUnique({
@@ -261,33 +259,6 @@ export class WaitlistService {
     });
     if (!wl || wl.status !== 'NOTIFIED') return;
     if (!wl.expiresAt || new Date() <= wl.expiresAt) return;
-
-    if (wl.notifiedStaffId && wl.notifiedDate && wl.notifiedStartTime) {
-      const [service, staffService] = await Promise.all([
-        this.prisma.service.findUnique({ where: { id: wl.serviceId } }),
-        this.prisma.staffService.findUnique({
-          where: {
-            staffId_serviceId: {
-              staffId: wl.notifiedStaffId,
-              serviceId: wl.serviceId,
-            },
-          },
-        }),
-      ]);
-      if (service) {
-        const duration = staffService?.durationMinutes ?? service.durationMinutes;
-        const totalMinutes =
-          duration +
-          (service.bufferBeforeMinutes ?? 0) +
-          (service.bufferAfterMinutes ?? 0);
-        await this.slotLock.releaseLockForDuration(
-          wl.notifiedStaffId,
-          wl.notifiedDate,
-          wl.notifiedStartTime,
-          totalMinutes,
-        );
-      }
-    }
 
     await this.prisma.waitlist.update({
       where: { id: waitlistId },
@@ -305,7 +276,14 @@ export class WaitlistService {
 
   @Cron('* * * * *')
   async handleExpiredNotified(): Promise<void> {
-    await this.processExpiredNotified();
+    if (!isSchedulerPrimaryInstance()) return;
+    try {
+      await this.processExpiredNotified();
+    } catch (err) {
+      this.logger.warn(
+        `handleExpiredNotified skipped: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   }
 
   /**

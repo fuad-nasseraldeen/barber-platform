@@ -69,7 +69,9 @@ export class GoogleVerifierService {
       throw new UnauthorizedException('Invalid token issuer');
     }
 
-    if (payload.email_verified !== true) {
+    const ev = payload.email_verified as boolean | string | undefined;
+    const verified = ev === true || ev === 'true' || ev === '1';
+    if (!verified) {
       throw new UnauthorizedException('Email not verified');
     }
 

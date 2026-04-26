@@ -5,6 +5,7 @@ import {
   ConflictException,
   BadRequestException,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationService } from '../notifications/notification.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
@@ -13,6 +14,22 @@ import { UpdateCustomerDto } from './dto/update-customer.dto';
 /** Normalize phone to digits; Israeli 050/9725 formats match. */
 function phoneDigits(phone: string): string {
   return phone.replace(/\D/g, '');
+}
+
+/** Compare two phone strings as the same subscriber (IL 050 vs 97250…). */
+function phonesEquivalent(a: string, b: string): boolean {
+  const da = phoneDigits(a);
+  const db = phoneDigits(b);
+  if (!da.length || !db.length) return false;
+  const norm = (d: string) => {
+    if (d.startsWith('972') && d.length >= 11) return `0${d.slice(3)}`;
+    return d;
+  };
+  return norm(da) === norm(db);
+}
+
+function syntheticCustomerEmail(): string {
+  return `customer-${randomUUID()}@placeholder.barber`;
 }
 
 function isPhoneBlocked(phone: string | undefined, blockedList: string[]): boolean {
@@ -37,38 +54,61 @@ export class CustomersService {
     private readonly notifications: NotificationService,
   ) {}
 
-  async create(businessId: string, dto: CreateCustomerDto) {
-    if (dto.phone) {
-      const business = await this.prisma.business.findUnique({
-        where: { id: businessId, deletedAt: null },
-        select: { settings: true },
-      });
-      const settings = business?.settings as { blockedPhones?: string[] } | null;
-      const blocked = settings?.blockedPhones ?? [];
-      if (isPhoneBlocked(dto.phone, blocked)) {
-        throw new BadRequestException('PHONE_BLOCKED');
-      }
-    }
-
-    const existing = await this.prisma.customer.findFirst({
+  private async findCustomerWithSamePhone(
+    businessId: string,
+    phone: string,
+    excludeCustomerId?: string,
+  ) {
+    const rows = await this.prisma.customer.findMany({
       where: {
         businessId,
-        email: dto.email,
         deletedAt: null,
+        phone: { not: null },
+        ...(excludeCustomerId ? { id: { not: excludeCustomerId } } : {}),
       },
+      select: { id: true, phone: true },
     });
-    if (existing) {
-      throw new ConflictException('Email already in use by another customer');
+    return rows.find((r) => r.phone && phonesEquivalent(r.phone, phone)) ?? null;
+  }
+
+  async create(businessId: string, dto: CreateCustomerDto) {
+    const business = await this.prisma.business.findUnique({
+      where: { id: businessId, deletedAt: null },
+      select: { settings: true },
+    });
+    const settings = business?.settings as { blockedPhones?: string[] } | null;
+    const blocked = settings?.blockedPhones ?? [];
+    if (isPhoneBlocked(dto.phone, blocked)) {
+      throw new BadRequestException('PHONE_BLOCKED');
+    }
+
+    const dupPhone = await this.findCustomerWithSamePhone(businessId, dto.phone);
+    if (dupPhone) {
+      throw new ConflictException('Phone already in use by another customer');
+    }
+
+    let email: string;
+    let attempts = 0;
+    do {
+      email = syntheticCustomerEmail();
+      const clash = await this.prisma.customer.findFirst({
+        where: { businessId, email, deletedAt: null },
+      });
+      if (!clash) break;
+      attempts += 1;
+    } while (attempts < 10);
+    if (attempts >= 10) {
+      throw new ConflictException('Could not allocate unique email for customer');
     }
 
     const customer = await this.prisma.customer.create({
       data: {
         businessId,
         branchId: dto.branchId,
-        email: dto.email,
-        firstName: dto.firstName,
-        lastName: dto.lastName,
-        phone: dto.phone,
+        email,
+        firstName: dto.firstName.trim(),
+        lastName: dto.lastName.trim(),
+        phone: dto.phone.trim(),
         birthDate: dto.birthDate ? new Date(dto.birthDate) : null,
         gender: dto.gender,
         tagColor: dto.tagColor,
@@ -148,26 +188,15 @@ export class CustomersService {
       if (isPhoneBlocked(dto.phone, blocked)) {
         throw new BadRequestException('PHONE_BLOCKED');
       }
-    }
-
-    if (dto.email) {
-      const existing = await this.prisma.customer.findFirst({
-        where: {
-          businessId,
-          email: dto.email,
-          deletedAt: null,
-          id: { not: id },
-        },
-      });
-      if (existing) {
-        throw new ConflictException('Email already in use by another customer');
+      const dupPhone = await this.findCustomerWithSamePhone(businessId, dto.phone, id);
+      if (dupPhone) {
+        throw new ConflictException('Phone already in use by another customer');
       }
     }
 
     const data: Record<string, unknown> = {};
     if (dto.firstName !== undefined) data.firstName = dto.firstName;
     if (dto.lastName !== undefined) data.lastName = dto.lastName;
-    if (dto.email !== undefined) data.email = dto.email;
     if (dto.phone !== undefined) data.phone = dto.phone;
     if (dto.birthDate !== undefined) data.birthDate = dto.birthDate ? new Date(dto.birthDate) : null;
     if (dto.gender !== undefined) data.gender = dto.gender;

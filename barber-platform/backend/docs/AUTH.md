@@ -67,10 +67,13 @@ POST /api/v1/auth/refresh
 ```
 JWT_SECRET=...
 JWT_EXPIRES_IN=15m
-JWT_REFRESH_EXPIRES_IN=7d
+JWT_REFRESH_EXPIRES_IN=90d
 GOOGLE_CLIENT_ID=xxx.apps.googleusercontent.com
 SMS_TO_API_KEY=...
 ```
+
+- `JWT_EXPIRES_IN`: Access token TTL (default 15m)
+- `JWT_REFRESH_EXPIRES_IN`: Refresh token sliding expiry (default 90d)
 
 ## Migration
 

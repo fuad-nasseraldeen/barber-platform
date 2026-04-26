@@ -8,6 +8,7 @@ import {
   Param,
   Query,
   UseGuards,
+  ForbiddenException,
 } from '@nestjs/common';
 import { BusinessService } from './business.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -45,7 +46,13 @@ export class BusinessController {
   @Get('by-id/:id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Permissions('business:read')
-  async getById(@Param('id') id: string) {
+  async getById(
+    @Param('id') id: string,
+    @CurrentUser('businessId') viewerBusinessId: string | undefined,
+  ) {
+    if (viewerBusinessId && id !== viewerBusinessId) {
+      throw new ForbiddenException('Cross-business access denied');
+    }
     return this.business.findById(id);
   }
 
@@ -60,21 +67,37 @@ export class BusinessController {
   @Get(':slug')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Permissions('business:read')
-  async getBySlug(@Param('slug') slug: string) {
-    return this.business.findBySlug(slug);
+  async getBySlug(
+    @Param('slug') slug: string,
+    @CurrentUser('businessId') viewerBusinessId: string | undefined,
+  ) {
+    return this.business.findBySlug(slug, viewerBusinessId);
   }
 
   @Patch(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('owner', 'manager')
-  async update(@Param('id') id: string, @Body() dto: UpdateBusinessDto) {
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateBusinessDto,
+    @CurrentUser('businessId') viewerBusinessId: string | undefined,
+  ) {
+    if (viewerBusinessId && id !== viewerBusinessId) {
+      throw new ForbiddenException('Cross-business access denied');
+    }
     return this.business.update(id, dto);
   }
 
   @Delete(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('owner')
-  async delete(@Param('id') id: string) {
+  async delete(
+    @Param('id') id: string,
+    @CurrentUser('businessId') viewerBusinessId: string | undefined,
+  ) {
+    if (viewerBusinessId && id !== viewerBusinessId) {
+      throw new ForbiddenException('Cross-business access denied');
+    }
     return this.business.delete(id);
   }
 

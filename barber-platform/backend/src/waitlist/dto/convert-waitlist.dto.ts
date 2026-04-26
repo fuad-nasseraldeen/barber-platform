@@ -4,7 +4,11 @@ import {
   IsDateString,
   IsString,
   Matches,
+  IsInt,
+  Min,
+  Max,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class ConvertWaitlistDto {
   @IsUUID()
@@ -36,4 +40,10 @@ export class ConvertWaitlistDto {
   @IsString()
   @Matches(/^([01]\d|2[0-3]):([0-5]\d)$/)
   startTime: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(720)
+  durationMinutes: number;
 }

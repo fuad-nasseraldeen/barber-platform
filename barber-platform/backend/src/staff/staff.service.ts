@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   ForbiddenException,
   BadRequestException,
@@ -8,16 +9,19 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { CacheService, CACHE_TTL } from '../redis/cache.service';
-import { AvailabilityWorkerService } from '../availability/availability-worker.service';
+import { ComputedAvailabilityService } from '../availability/computed-availability.service';
 import { CreateStaffDto } from './dto/create-staff.dto';
 import { RegisterStaffDto } from './dto/register-staff.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
 import { StaffServicesDto } from './dto/staff-services.dto';
 import { StaffWorkingHoursDto } from './dto/staff-working-hours.dto';
-import { StaffBreakDto } from './dto/staff-break.dto';
+import { StaffWorkingHoursBatchDto } from './dto/staff-working-hours-batch.dto';
+import { StaffBreakDto, StaffWeeklyBreakMeDto } from './dto/staff-break.dto';
 import {
   CreateStaffBreakExceptionDto,
   CreateStaffBreakExceptionBulkDto,
+  CreateStaffBreakExceptionMeDto,
+  CreateStaffBreakExceptionBulkMeDto,
 } from './dto/staff-break-exception.dto';
 import {
   StaffBreakBulkWeeklyDto,
@@ -28,14 +32,24 @@ import { UpdateMyServicesDto } from './dto/update-my-services.dto';
 import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
 import { RequestVacationDto } from './dto/request-vacation.dto';
 import { VacationStatus } from '@prisma/client';
+import { DateTime } from 'luxon';
+import {
+  addBusinessDaysFromYmd,
+  businessLocalDayBounds,
+  businessLocalYmdFromJsDate,
+  resolveBusinessTimeZone,
+} from '../common/business-local-time';
+import { endDateOnlyUtcInclusive, parseDateOnlyUtc } from '../common/date-only';
 
 @Injectable()
 export class StaffService {
+  private readonly logger = new Logger(StaffService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly cache: CacheService,
-    private readonly availabilityWorker: AvailabilityWorkerService,
+    private readonly computed: ComputedAvailabilityService,
   ) {}
 
   async registerFromInvite(userId: string, dto: RegisterStaffDto) {
@@ -89,6 +103,8 @@ export class StaffService {
       include: { branch: true },
     });
 
+    await this.seedDefaultWorkingHours(staff.id, staff.branchId);
+
     await this.prisma.businessUser.create({
       data: {
         businessId: staffInvite.businessId,
@@ -132,6 +148,7 @@ export class StaffService {
         location: true,
       },
     });
+    await this.seedDefaultWorkingHours(staff.id, staff.branchId);
     await this.cache.invalidateBusiness(businessId);
     return staff;
   }
@@ -208,19 +225,50 @@ export class StaffService {
         staffServices: { include: { service: true } },
         staffWorkingHours: true,
         staffBreaks: true,
-        user: { select: { avatarUrl: true } },
+        staffTimeOff: {
+          where: { status: 'APPROVED' },
+          orderBy: { startDate: 'asc' },
+        },
+        user: {
+          select: {
+            avatarUrl: true,
+            businessUsers: {
+              where: { businessId },
+              take: 1,
+              select: { role: { select: { slug: true } } },
+            },
+          },
+        },
       },
       orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
       skip,
       take: limit,
     });
-    return list.map(({ user, ...s }) => ({
-      ...s,
-      avatarUrl: s.avatarUrl ?? user?.avatarUrl ?? null,
-    }));
+    const managementRank = (slug: string | null) => {
+      if (slug === 'owner') return 0;
+      if (slug === 'manager') return 1;
+      return 2;
+    };
+    const mapped = list.map(({ user, ...s }) => {
+      const businessRoleSlug = user?.businessUsers?.[0]?.role?.slug ?? null;
+      return {
+        ...s,
+        avatarUrl: s.avatarUrl ?? user?.avatarUrl ?? null,
+        businessRoleSlug,
+      };
+    });
+    mapped.sort((a, b) => {
+      const ra = managementRank(a.businessRoleSlug ?? null);
+      const rb = managementRank(b.businessRoleSlug ?? null);
+      if (ra !== rb) return ra - rb;
+      const ln = (a.lastName || '').localeCompare(b.lastName || '', undefined, { sensitivity: 'base' });
+      if (ln !== 0) return ln;
+      return (a.firstName || '').localeCompare(b.firstName || '', undefined, { sensitivity: 'base' });
+    });
+    return mapped;
   }
 
-  async findById(id: string) {
+  async findById(id: string, viewerBusinessId?: string) {
     const staff = await this.prisma.staff.findUnique({
       where: { id, deletedAt: null },
       include: {
@@ -234,6 +282,9 @@ export class StaffService {
     });
     if (!staff) {
       throw new NotFoundException('Staff not found');
+    }
+    if (viewerBusinessId && staff.businessId !== viewerBusinessId) {
+      throw new ForbiddenException('Staff does not belong to this business');
     }
     return staff;
   }
@@ -261,6 +312,12 @@ export class StaffService {
         ...(dto.monthlyTargetRevenue !== undefined && {
           monthlyTargetRevenue: dto.monthlyTargetRevenue,
         }),
+        ...(dto.birthDate !== undefined && {
+          birthDate: dto.birthDate != null && dto.birthDate !== '' ? new Date(dto.birthDate) : null,
+        }),
+        ...(dto.gender !== undefined && {
+          gender: dto.gender === null || dto.gender === '' ? null : dto.gender,
+        }),
       },
       include: { branch: true, location: true },
     });
@@ -269,7 +326,14 @@ export class StaffService {
   async updateStaffServices(
     staffId: string,
     businessId: string,
-    dto: { updates: Array<{ staffServiceId: string; durationMinutes?: number; price?: number }> },
+    dto: {
+      updates: Array<{
+        staffServiceId: string;
+        allowBooking?: boolean;
+        durationMinutes?: number;
+        price?: number;
+      }>;
+    },
   ) {
     await this.ensureStaffBelongsToBusiness(staffId, businessId);
 
@@ -284,6 +348,7 @@ export class StaffService {
       await this.prisma.staffService.update({
         where: { id: u.staffServiceId },
         data: {
+          ...(u.allowBooking !== undefined && { allowBooking: u.allowBooking }),
           ...(u.durationMinutes != null && { durationMinutes: u.durationMinutes }),
           ...(u.price != null && { price: u.price }),
         },
@@ -294,11 +359,47 @@ export class StaffService {
     return this.findById(staffId);
   }
 
+  private slugFromServiceName(name: string): string {
+    const base = name
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, '-')
+      .replace(/[^a-z0-9-\u0590-\u05FF]/g, '');
+    if (base) return base;
+    let h = 0;
+    for (let i = 0; i < name.length; i++) {
+      h = ((h << 5) - h + name.charCodeAt(i)) | 0;
+    }
+    return `s-${Math.abs(h).toString(36)}`;
+  }
+
+  private async ensureStaffCanAttachToCatalogService(staffId: string, serviceId: string) {
+    const service = await this.prisma.service.findFirst({
+      where: { id: serviceId, deletedAt: null },
+      select: { blockAllStaff: true },
+    });
+    if (!service) {
+      throw new NotFoundException('Service not found');
+    }
+    if (service.blockAllStaff) {
+      throw new ForbiddenException('This service is not available for staff');
+    }
+    const block = await this.prisma.serviceStaffBlock.findUnique({
+      where: {
+        serviceId_staffId: { serviceId, staffId },
+      },
+    });
+    if (block) {
+      throw new ForbiddenException('This service is not available for you');
+    }
+  }
+
   async addStaffService(
     staffId: string,
     dto: { businessId: string; serviceId: string; durationMinutes?: number; price?: number },
   ) {
     await this.ensureStaffBelongsToBusiness(staffId, dto.businessId);
+    await this.ensureStaffCanAttachToCatalogService(staffId, dto.serviceId);
     await this.ensureServiceBelongsToStaffBranch(staffId, dto.serviceId);
 
     const service = await this.prisma.service.findUnique({
@@ -322,6 +423,10 @@ export class StaffService {
       },
     });
 
+    await this.cache.invalidateStaffValidationBundleForStaff(
+      staffId,
+      'staff_service_added',
+    );
     await this.cache.invalidateBusiness(dto.businessId);
     return this.findById(staffId);
   }
@@ -341,6 +446,10 @@ export class StaffService {
       where: { id: staffServiceId },
     });
 
+    await this.cache.invalidateStaffValidationBundleForStaff(
+      staffId,
+      'staff_service_removed',
+    );
     await this.cache.invalidateBusiness(businessId);
     return this.findById(staffId);
   }
@@ -386,7 +495,6 @@ export class StaffService {
       where: { id },
       data: { deletedAt: new Date(), isActive: false },
     });
-    await this.availabilityWorker.invalidateAndQueueForStaff(id, 0);
     return { success: true };
   }
 
@@ -465,19 +573,30 @@ export class StaffService {
       await this.prisma.staffService.update({
         where: { id: u.staffServiceId },
         data: {
+          ...(u.allowBooking !== undefined && { allowBooking: u.allowBooking }),
           ...(u.durationMinutes != null && { durationMinutes: u.durationMinutes }),
           ...(u.price != null && { price: u.price }),
         },
       });
     }
 
+    await this.cache.invalidateStaffValidationBundleForStaff(
+      staff.id,
+      'staff_service_metadata_updated',
+    );
     await this.cache.invalidateBusiness(staff.businessId);
     return this.findMyProfile(userId);
   }
 
   async addServiceToMyself(
     userId: string,
-    dto: { serviceId: string; durationMinutes?: number; price?: number },
+    dto: {
+      serviceId?: string;
+      newServiceName?: string;
+      durationMinutes: number;
+      price: number;
+      branchId?: string;
+    },
   ) {
     const staff = await this.prisma.staff.findFirst({
       where: { userId, deletedAt: null },
@@ -485,12 +604,72 @@ export class StaffService {
     if (!staff) {
       throw new NotFoundException('Staff profile not found');
     }
+    const newName = dto.newServiceName?.trim();
+    if (newName && dto.serviceId) {
+      throw new BadRequestException('Send either serviceId or newServiceName, not both');
+    }
+    if (!newName && !dto.serviceId) {
+      throw new BadRequestException('serviceId or newServiceName is required');
+    }
+    if (newName) {
+      return this.createPersonalCatalogService(userId, staff, newName, dto.durationMinutes, dto.price, dto.branchId);
+    }
     await this.addStaffService(staff.id, {
       businessId: staff.businessId,
-      serviceId: dto.serviceId,
+      serviceId: dto.serviceId!,
       durationMinutes: dto.durationMinutes,
       price: dto.price,
     });
+    return this.findMyProfile(userId);
+  }
+
+  private async createPersonalCatalogService(
+    userId: string,
+    staff: { id: string; businessId: string; branchId: string | null },
+    name: string,
+    durationMinutes: number,
+    price: number,
+    branchIdInput?: string,
+  ) {
+    const branchId = branchIdInput ?? staff.branchId ?? null;
+    const slug = this.slugFromServiceName(name);
+    const existing = await this.prisma.service.findFirst({
+      where: { businessId: staff.businessId, branchId, slug, deletedAt: null },
+    });
+    if (existing) {
+      throw new ConflictException('A service with this name already exists');
+    }
+    const maxOrder = await this.prisma.service.aggregate({
+      where: { businessId: staff.businessId, branchId, deletedAt: null },
+      _max: { sortOrder: true },
+    });
+    const sortOrder = (maxOrder._max?.sortOrder ?? -1) + 1;
+    const created = await this.prisma.service.create({
+      data: {
+        businessId: staff.businessId,
+        branchId,
+        name,
+        slug,
+        durationMinutes,
+        price,
+        color: '#3B82F6',
+        isActive: true,
+        sortOrder,
+      },
+    });
+    await this.prisma.staffService.create({
+      data: {
+        staffId: staff.id,
+        serviceId: created.id,
+        durationMinutes,
+        price,
+      },
+    });
+    await this.cache.invalidateStaffValidationBundleForStaff(
+      staff.id,
+      'personal_service_created',
+    );
+    await this.cache.invalidateBusiness(staff.businessId);
     return this.findMyProfile(userId);
   }
 
@@ -508,6 +687,9 @@ export class StaffService {
   async assignServices(dto: StaffServicesDto) {
     await this.ensureStaffBelongsToBusiness(dto.staffId, dto.businessId);
     await this.ensureServicesBelongToBusiness(dto.serviceIds, dto.businessId);
+    for (const serviceId of dto.serviceIds) {
+      await this.ensureStaffCanAttachToCatalogService(dto.staffId, serviceId);
+    }
 
     await this.prisma.staffService.deleteMany({
       where: { staffId: dto.staffId },
@@ -518,6 +700,10 @@ export class StaffService {
         serviceId,
       })),
     });
+    await this.cache.invalidateStaffValidationBundleForStaff(
+      dto.staffId,
+      'staff_services_assigned',
+    );
     return this.findById(dto.staffId);
   }
 
@@ -546,8 +732,67 @@ export class StaffService {
       },
     });
 
-    await this.invalidateAvailabilityForStaff(dto.staffId);
+    await this.cache.invalidateStaffValidationBundleForStaff(
+      dto.staffId,
+      'working_hours_updated',
+    );
+    await this.cache.invalidateBusiness(dto.businessId);
     return result;
+  }
+
+  /**
+   * Replace the staff member's entire weekly working-hours row set in one transaction.
+   * Omits days from `days` or days without both start+end → no row for that weekday (day off).
+   */
+  async setWorkingHoursBatch(dto: StaffWorkingHoursBatchDto) {
+    await this.ensureStaffBelongsToBusiness(dto.staffId, dto.businessId);
+    const seen = new Set<number>();
+    for (const day of dto.days) {
+      if (seen.has(day.dayOfWeek)) {
+        throw new BadRequestException(`Duplicate dayOfWeek: ${day.dayOfWeek}`);
+      }
+      seen.add(day.dayOfWeek);
+      const hasStart = Boolean(day.startTime?.trim());
+      const hasEnd = Boolean(day.endTime?.trim());
+      if (hasStart !== hasEnd) {
+        throw new BadRequestException(
+          `dayOfWeek ${day.dayOfWeek}: provide both startTime and endTime, or neither`,
+        );
+      }
+      if (hasStart && day.startTime && day.endTime) {
+        this.validateTimeRange(day.startTime, day.endTime);
+      }
+    }
+
+    const staff = await this.prisma.staff.findUnique({
+      where: { id: dto.staffId },
+      select: { branchId: true },
+    });
+    if (!staff) throw new NotFoundException('Staff not found');
+
+    const rows = dto.days
+      .filter((d) => d.startTime?.trim() && d.endTime?.trim())
+      .map((d) => ({
+        staffId: dto.staffId,
+        branchId: staff.branchId ?? undefined,
+        dayOfWeek: d.dayOfWeek,
+        startTime: d.startTime!.trim(),
+        endTime: d.endTime!.trim(),
+      }));
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.staffWorkingHours.deleteMany({ where: { staffId: dto.staffId } });
+      if (rows.length > 0) {
+        await tx.staffWorkingHours.createMany({ data: rows });
+      }
+    });
+
+    await this.cache.invalidateStaffValidationBundleForStaff(
+      dto.staffId,
+      'working_hours_batch_replaced',
+    );
+    await this.cache.invalidateBusiness(dto.businessId);
+    return this.findById(dto.staffId);
   }
 
   async addBreak(dto: StaffBreakDto) {
@@ -558,7 +803,7 @@ export class StaffService {
       where: { id: dto.staffId },
       select: { branchId: true },
     });
-    return this.prisma.staffBreak.create({
+    const created = await this.prisma.staffBreak.create({
       data: {
         staffId: dto.staffId,
         branchId: staff?.branchId ?? undefined,
@@ -567,6 +812,12 @@ export class StaffService {
         endTime: dto.endTime,
       },
     });
+    await this.cache.invalidateStaffValidationBundleForStaff(
+      dto.staffId,
+      'weekly_break_created',
+    );
+    await this.cache.invalidateBusiness(dto.businessId);
+    return created;
   }
 
   async addBreakException(dto: CreateStaffBreakExceptionDto) {
@@ -577,8 +828,7 @@ export class StaffService {
       where: { id: dto.staffId },
       select: { branchId: true },
     });
-    const date = new Date(dto.date);
-    date.setHours(0, 0, 0, 0);
+    const date = parseDateOnlyUtc(dto.date);
     const result = await this.prisma.staffBreakException.create({
       data: {
         staffId: dto.staffId,
@@ -586,9 +836,16 @@ export class StaffService {
         date,
         startTime: dto.startTime,
         endTime: dto.endTime,
+        kind: dto.kind === 'TIME_BLOCK' ? 'TIME_BLOCK' : 'BREAK',
       },
     });
-    await this.invalidateAvailabilityForStaff(dto.staffId);
+    await this.cache.invalidateStaffValidationBundleForDate(
+      dto.staffId,
+      dto.date,
+      'break_exception_created',
+    );
+    await this.bustAvailabilityForStaffCalendarDay(dto.businessId, dto.staffId, result.date);
+    await this.cache.invalidateBusiness(dto.businessId);
     return result;
   }
 
@@ -602,24 +859,33 @@ export class StaffService {
     });
     if (!staff) throw new NotFoundException('Staff not found');
 
-    const start = new Date(dto.startDate);
-    const end = new Date(dto.endDate);
-    if (end < start) {
+    const start = parseDateOnlyUtc(dto.startDate);
+    const end = parseDateOnlyUtc(dto.endDate);
+    if (end.getTime() < start.getTime()) {
       throw new BadRequestException('endDate must be after startDate');
     }
 
-    const toCreate: { staffId: string; branchId: string | null; date: Date; startTime: string; endTime: string }[] = [];
-    const cursor = new Date(start);
-    cursor.setHours(0, 0, 0, 0);
+    const toCreate: {
+      staffId: string;
+      branchId: string | null;
+      date: Date;
+      startTime: string;
+      endTime: string;
+      kind: 'BREAK';
+    }[] = [];
+    let dt = new Date(start.getTime());
+    const endT = end.getTime();
+    const startDowUtc = start.getUTCDay();
 
-    while (cursor <= end) {
+    while (dt.getTime() <= endT) {
       if (dto.recurrence === 'ONCE') {
         toCreate.push({
           staffId: dto.staffId,
           branchId: staff.branchId,
-          date: new Date(cursor),
+          date: new Date(dt.getTime()),
           startTime: dto.startTime,
           endTime: dto.endTime,
+          kind: 'BREAK',
         });
         break;
       }
@@ -627,31 +893,47 @@ export class StaffService {
         toCreate.push({
           staffId: dto.staffId,
           branchId: staff.branchId,
-          date: new Date(cursor),
+          date: new Date(dt.getTime()),
           startTime: dto.startTime,
           endTime: dto.endTime,
+          kind: 'BREAK',
         });
       }
-      if (dto.recurrence === 'WEEKLY') {
-        const origStart = new Date(start);
-        if (cursor.getDay() === origStart.getDay()) {
-          toCreate.push({
-            staffId: dto.staffId,
-            branchId: staff.branchId,
-            date: new Date(cursor),
-            startTime: dto.startTime,
-            endTime: dto.endTime,
-          });
-        }
+      if (dto.recurrence === 'WEEKLY' && dt.getUTCDay() === startDowUtc) {
+        toCreate.push({
+          staffId: dto.staffId,
+          branchId: staff.branchId,
+          date: new Date(dt.getTime()),
+          startTime: dto.startTime,
+          endTime: dto.endTime,
+          kind: 'BREAK',
+        });
       }
-      cursor.setDate(cursor.getDate() + 1);
+      dt = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate() + 1));
     }
 
     if (toCreate.length === 0) return { count: 0 };
     const { count } = await this.prisma.staffBreakException.createMany({
       data: toCreate,
     });
-    await this.invalidateAvailabilityForStaff(dto.staffId);
+    const biz = await this.prisma.business.findUnique({
+      where: { id: dto.businessId },
+      select: { timezone: true },
+    });
+    const tz = resolveBusinessTimeZone(biz?.timezone);
+    const ymds = new Set<string>();
+    for (const row of toCreate) {
+      ymds.add(businessLocalYmdFromJsDate(tz, row.date));
+    }
+    for (const ymd of ymds) {
+      await this.cache.invalidateStaffValidationBundleForDate(
+        dto.staffId,
+        ymd,
+        'break_exception_bulk_created',
+      );
+      await this.cache.invalidateAvailability(dto.staffId, ymd);
+    }
+    await this.cache.invalidateBusiness(dto.businessId);
     return { count };
   }
 
@@ -680,17 +962,21 @@ export class StaffService {
     const { count } = await this.prisma.staffBreak.createMany({
       data: toCreate,
     });
-    for (const staffId of dto.staffIds) {
-      await this.invalidateAvailabilityForStaff(staffId);
+    for (const staff of staffList) {
+      await this.cache.invalidateStaffValidationBundleForStaff(
+        staff.id,
+        'weekly_break_bulk_created',
+      );
     }
+    await this.cache.invalidateBusiness(dto.businessId);
     return { count };
   }
 
   async addBreakExceptionBulkWeeklyRange(dto: StaffBreakBulkWeeklyRangeDto) {
     this.validateTimeRange(dto.startTime, dto.endTime);
-    const start = new Date(dto.startDate);
-    const end = new Date(dto.endDate);
-    if (end < start) {
+    const start = parseDateOnlyUtc(dto.startDate);
+    const end = parseDateOnlyUtc(dto.endDate);
+    if (end.getTime() < start.getTime()) {
       throw new BadRequestException('endDate must be after startDate');
     }
     const staffList = await this.prisma.staff.findMany({
@@ -700,30 +986,43 @@ export class StaffService {
     if (staffList.length !== dto.staffIds.length) {
       throw new BadRequestException('One or more staff not found or do not belong to business');
     }
-    const toCreate: { staffId: string; branchId: string | null; date: Date; startTime: string; endTime: string }[] = [];
-    const cursor = new Date(start);
-    cursor.setHours(0, 0, 0, 0);
-    while (cursor <= end) {
-      if (dto.daysOfWeek.includes(cursor.getDay())) {
+    const toCreate: {
+      staffId: string;
+      branchId: string | null;
+      date: Date;
+      startTime: string;
+      endTime: string;
+      kind: 'BREAK';
+    }[] = [];
+    let dt = new Date(start.getTime());
+    const endT = end.getTime();
+    while (dt.getTime() <= endT) {
+      if (dto.daysOfWeek.includes(dt.getUTCDay())) {
         for (const staff of staffList) {
           toCreate.push({
             staffId: staff.id,
             branchId: staff.branchId,
-            date: new Date(cursor),
+            date: new Date(dt.getTime()),
             startTime: dto.startTime,
             endTime: dto.endTime,
+            kind: 'BREAK',
           });
         }
       }
-      cursor.setDate(cursor.getDate() + 1);
+      dt = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate() + 1));
     }
     if (toCreate.length === 0) return { count: 0 };
     const { count } = await this.prisma.staffBreakException.createMany({
       data: toCreate,
     });
-    for (const staffId of dto.staffIds) {
-      await this.invalidateAvailabilityForStaff(staffId);
+    for (const s of staffList) {
+      await this.cache.invalidateStaffValidationBundleForStaff(
+        s.id,
+        'break_exception_bulk_weekly_range_created',
+      );
+      await this.cache.invalidateStaff(s.id);
     }
+    await this.cache.invalidateBusiness(dto.businessId);
     return { count };
   }
 
@@ -733,9 +1032,8 @@ export class StaffService {
     });
     if (!staff) throw new NotFoundException('Staff not found');
 
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
+    const start = parseDateOnlyUtc(startDate);
+    const end = endDateOnlyUtcInclusive(endDate);
 
     const [weeklyBreaks, exceptions] = await Promise.all([
       this.prisma.staffBreak.findMany({
@@ -755,21 +1053,86 @@ export class StaffService {
   async deleteBreakException(id: string, staffId: string) {
     const rec = await this.prisma.staffBreakException.findFirst({
       where: { id, staffId },
+      include: { staff: { select: { businessId: true } } },
     });
     if (!rec) throw new NotFoundException('Break not found');
     await this.prisma.staffBreakException.delete({ where: { id } });
-    await this.invalidateAvailabilityForStaff(staffId);
+    await this.cache.invalidateStaffValidationBundleForDate(
+      staffId,
+      businessLocalYmdFromJsDate(
+        resolveBusinessTimeZone(
+          (
+            await this.prisma.business.findUnique({
+              where: { id: rec.staff.businessId },
+              select: { timezone: true },
+            })
+          )?.timezone,
+        ),
+        rec.date,
+      ),
+      'break_exception_deleted',
+    );
+    await this.bustAvailabilityForStaffCalendarDay(rec.staff.businessId, staffId, rec.date);
+    await this.cache.invalidateBusiness(rec.staff.businessId);
     return { success: true };
   }
 
   async deleteWeeklyBreak(id: string, staffId: string) {
     const rec = await this.prisma.staffBreak.findFirst({
       where: { id, staffId },
+      include: { staff: { select: { businessId: true } } },
     });
     if (!rec) throw new NotFoundException('Break not found');
     await this.prisma.staffBreak.delete({ where: { id } });
-    await this.invalidateAvailabilityForStaff(staffId);
+    await this.cache.invalidateStaffValidationBundleForStaff(
+      staffId,
+      'weekly_break_deleted',
+    );
+    await this.cache.invalidateBusiness(rec.staff.businessId);
     return { success: true };
+  }
+
+  /**
+   * Break exceptions alter layer-1 busy intervals; `invalidateBusiness` does not touch `av:busy` / `av:day`.
+   */
+  private async bustAvailabilityForStaffCalendarDay(
+    businessId: string,
+    staffId: string,
+    exceptionDate: Date,
+  ): Promise<void> {
+    const biz = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { timezone: true },
+    });
+    const tz = resolveBusinessTimeZone(biz?.timezone);
+    const ymd = businessLocalYmdFromJsDate(tz, exceptionDate);
+    await this.cache.invalidateAvailability(staffId, ymd);
+  }
+
+  private async invalidateApprovedTimeOffValidationBundle(
+    staffId: string,
+    businessId: string,
+    startDate: Date,
+    endDate: Date,
+    reason: string,
+  ): Promise<void> {
+    const biz = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { timezone: true },
+    });
+    const tz = resolveBusinessTimeZone(biz?.timezone);
+    let ymd = businessLocalYmdFromJsDate(tz, startDate);
+    const endYmd = businessLocalYmdFromJsDate(tz, endDate);
+
+    while (ymd <= endYmd) {
+      await this.cache.invalidateStaffValidationBundleForDate(
+        staffId,
+        ymd,
+        reason,
+      );
+      await this.cache.invalidateAvailability(staffId, ymd);
+      ymd = addBusinessDaysFromYmd(tz, ymd, 1);
+    }
   }
 
   private async getStaffIdByUserId(userId: string): Promise<string> {
@@ -786,18 +1149,12 @@ export class StaffService {
     return this.getMyBreaks(staffId, startDate, endDate);
   }
 
-  async addBreakExceptionByUserId(
-    userId: string,
-    dto: Omit<CreateStaffBreakExceptionDto, 'staffId'> & { businessId: string },
-  ) {
+  async addBreakExceptionByUserId(userId: string, dto: CreateStaffBreakExceptionMeDto) {
     const staffId = await this.getStaffIdByUserId(userId);
     return this.addBreakException({ ...dto, staffId });
   }
 
-  async addBreakExceptionBulkByUserId(
-    userId: string,
-    dto: Omit<CreateStaffBreakExceptionBulkDto, 'staffId'> & { businessId: string },
-  ) {
+  async addBreakExceptionBulkByUserId(userId: string, dto: CreateStaffBreakExceptionBulkMeDto) {
     const staffId = await this.getStaffIdByUserId(userId);
     return this.addBreakExceptionBulk({ ...dto, staffId });
   }
@@ -812,10 +1169,7 @@ export class StaffService {
     return this.deleteWeeklyBreak(id, staffId);
   }
 
-  async addWeeklyBreakByUserId(
-    userId: string,
-    dto: { businessId: string; dayOfWeek: number; startTime: string; endTime: string },
-  ) {
+  async addWeeklyBreakByUserId(userId: string, dto: StaffWeeklyBreakMeDto) {
     const staffId = await this.getStaffIdByUserId(userId);
     return this.addBreak({
       staffId,
@@ -853,14 +1207,40 @@ export class StaffService {
       },
     });
 
-    await this.invalidateAvailabilityForStaff(dto.staffId);
+    await this.invalidateApprovedTimeOffValidationBundle(
+      dto.staffId,
+      dto.businessId,
+      startDate,
+      endDate,
+      'time_off_created_approved',
+    );
     return result;
   }
 
-  private async invalidateAvailabilityForStaff(staffId: string): Promise<void> {
-    const raw = this.config.get('BOOKING_WINDOW_DAYS', '90');
-    const windowDays = parseInt(raw, 10) || 90;
-    await this.availabilityWorker.invalidateAndQueueForStaff(staffId, windowDays);
+  /**
+   * Mon–Fri baseline (dayOfWeek 1–5) for new staff. Also used when business onboarding creates the owner staff row.
+   */
+  async applyDefaultWorkingScheduleForNewStaff(
+    staffId: string,
+    branchId: string | null | undefined,
+  ): Promise<void> {
+    await this.seedDefaultWorkingHours(staffId, branchId);
+  }
+
+  private async seedDefaultWorkingHours(
+    staffId: string,
+    branchId: string | null | undefined,
+  ): Promise<void> {
+    const days = [1, 2, 3, 4, 5] as const;
+    await this.prisma.staffWorkingHours.createMany({
+      data: days.map((dayOfWeek) => ({
+        staffId,
+        branchId: branchId ?? undefined,
+        dayOfWeek,
+        startTime: '09:00',
+        endTime: '18:00',
+      })),
+    });
   }
 
   async ensureStaffBelongsToBusiness(staffId: string, businessId: string) {
@@ -941,10 +1321,18 @@ export class StaffService {
       },
     });
 
+    if (!requireApproval) {
+      await this.invalidateApprovedTimeOffValidationBundle(
+        staff.id,
+        staff.businessId,
+        startDate,
+        endDate,
+        'vacation_request_auto_approved',
+      );
+    }
     if (requireApproval) {
       await this.notifyManagersVacationRequest(staff.businessId, staff.id, staff.firstName, staff.lastName, timeOff.id);
     } else {
-      await this.invalidateAvailabilityForStaff(staff.id);
     }
 
     return timeOff;
@@ -1057,7 +1445,13 @@ export class StaffService {
       where: { id: timeOffId },
       data: { status: 'APPROVED' },
     });
-    await this.invalidateAvailabilityForStaff(timeOff.staffId);
+    await this.invalidateApprovedTimeOffValidationBundle(
+      timeOff.staffId,
+      businessId,
+      timeOff.startDate,
+      timeOff.endDate,
+      'vacation_approved',
+    );
     return { success: true };
   }
 
@@ -1095,8 +1489,301 @@ export class StaffService {
       where: { id: timeOffId },
     });
     if (timeOff.status === 'APPROVED') {
-      await this.invalidateAvailabilityForStaff(timeOff.staffId);
+      await this.invalidateApprovedTimeOffValidationBundle(
+        timeOff.staffId,
+        businessId,
+        timeOff.startDate,
+        timeOff.endDate,
+        'vacation_deleted_approved',
+      );
     }
     return { success: true };
+  }
+
+  /**
+   * רשימת עובדים פעילים + שעות + הפסקות + חופש + ספירת סלוטי זמינות לכל שירות
+   * (חלון של 5 ימי חול ראשונים — לפי יומן ואזור זמן של העסק, מיושר עם getAvailabilityDayMap).
+   */
+  async getScheduleSnapshot(
+    businessId: string,
+    branchId?: string,
+    printToServerConsole = false,
+  ) {
+    const dayCount = 5;
+
+    const bizRow = await this.prisma.business.findUnique({
+      where: { id: businessId },
+      select: { timezone: true },
+    });
+    const timeZone = resolveBusinessTimeZone(bizRow?.timezone);
+    const anchorYmd = this.nextFirstBusinessWeekdayYmd(timeZone);
+
+    const dates: string[] = [];
+    for (let i = 0; i < dayCount; i++) {
+      dates.push(addBusinessDaysFromYmd(timeZone, anchorYmd, i));
+    }
+
+    const rangeStart = new Date(businessLocalDayBounds(timeZone, dates[0]!).startMs);
+    const rangeEndExclusive = new Date(
+      businessLocalDayBounds(timeZone, dates[dates.length - 1]!).endMs,
+    );
+
+    const hebDays = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+
+    const list = await this.prisma.staff.findMany({
+      where: {
+        businessId,
+        deletedAt: null,
+        isActive: true,
+        ...(branchId ? { branchId } : {}),
+      },
+      include: {
+        branch: { select: { id: true, name: true } },
+        staffWorkingHours: { orderBy: { dayOfWeek: 'asc' } },
+        staffBreaks: { orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }] },
+        staffBreakExceptions: {
+          where: {
+            date: { gte: rangeStart, lt: rangeEndExclusive },
+          },
+          orderBy: [{ date: 'asc' }, { startTime: 'asc' }],
+        },
+        staffTimeOff: {
+          where: { status: VacationStatus.APPROVED },
+          orderBy: { startDate: 'asc' },
+        },
+        staffServices: {
+          where: { allowBooking: true },
+          include: {
+            service: { select: { id: true, name: true } },
+          },
+        },
+      },
+      orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
+    });
+
+    type ServiceAv = {
+      serviceId: string;
+      serviceName: string;
+      perDay: { date: string; slotCount: number; slots: string[] }[];
+      totalSlotOptions: number;
+    };
+
+    const staffPayload: Array<{
+      id: string;
+      firstName: string;
+      lastName: string;
+      email: string | null;
+      phone: string | null;
+      branch: { id: string; name: string } | null;
+      isActive: boolean;
+      workingHoursByDay: Array<{
+        dayOfWeek: number;
+        dayLabelHe: string;
+        startTime: string;
+        endTime: string;
+      }>;
+      breaksByDay: Array<{
+        dayOfWeek: number;
+        dayLabelHe: string;
+        startTime: string;
+        endTime: string;
+      }>;
+      /** הפסקות לפי תאריך (טבלת staff_break_exceptions) בתוך חלון הצילום בלבד */
+      breakExceptionsInWindow: Array<{
+        date: string;
+        startTime: string;
+        endTime: string;
+      }>;
+      timeOff: Array<{
+        id: string;
+        startDate: string;
+        endDate: string;
+        isAllDay: boolean;
+        startTime: string | null;
+        endTime: string | null;
+        reason: string | null;
+      }>;
+      servicesAvailability: ServiceAv[];
+      summary: {
+        servicesWithBooking: number;
+        totalSlotOptionsAllServices: number;
+      };
+    }> = [];
+
+    for (const s of list) {
+      const workingHoursByDay = (s.staffWorkingHours ?? []).map((h) => ({
+        dayOfWeek: h.dayOfWeek,
+        dayLabelHe: hebDays[h.dayOfWeek] ?? String(h.dayOfWeek),
+        startTime: h.startTime,
+        endTime: h.endTime,
+      }));
+      const breaksByDay = (s.staffBreaks ?? []).map((b) => ({
+        dayOfWeek: b.dayOfWeek,
+        dayLabelHe: hebDays[b.dayOfWeek] ?? String(b.dayOfWeek),
+        startTime: b.startTime,
+        endTime: b.endTime,
+      }));
+      const breakExceptionsInWindow = (s.staffBreakExceptions ?? []).map((e) => ({
+        date: businessLocalYmdFromJsDate(timeZone, e.date),
+        startTime: e.startTime,
+        endTime: e.endTime,
+      }));
+      const timeOff = (s.staffTimeOff ?? []).map((t) => ({
+        id: t.id,
+        startDate: t.startDate.toISOString().slice(0, 10),
+        endDate: t.endDate.toISOString().slice(0, 10),
+        isAllDay: t.isAllDay,
+        startTime: t.startTime,
+        endTime: t.endTime,
+        reason: t.reason,
+      }));
+
+      const servicesAvailability: ServiceAv[] = [];
+      for (const ss of s.staffServices) {
+        const dayMap = await this.computed.getAvailabilityDayMap(
+          businessId,
+          s.id,
+          ss.service.id,
+          anchorYmd,
+          dayCount,
+          { businessTimeZone: timeZone },
+        );
+        const perDay: ServiceAv['perDay'] = [];
+        let total = 0;
+        for (let i = 0; i < dayCount; i++) {
+          const date = dates[i]!;
+          const slots = dayMap.get(date)?.slots ?? [];
+          total += slots.length;
+          perDay.push({ date, slotCount: slots.length, slots: [...slots] });
+        }
+        servicesAvailability.push({
+          serviceId: ss.service.id,
+          serviceName: ss.service.name,
+          perDay,
+          totalSlotOptions: total,
+        });
+      }
+
+      staffPayload.push({
+        id: s.id,
+        firstName: s.firstName,
+        lastName: s.lastName,
+        email: s.email,
+        phone: s.phone,
+        branch: s.branch ?? null,
+        isActive: s.isActive,
+        workingHoursByDay,
+        breaksByDay,
+        breakExceptionsInWindow,
+        timeOff,
+        servicesAvailability,
+        summary: {
+          servicesWithBooking: s.staffServices.length,
+          totalSlotOptionsAllServices: servicesAvailability.reduce(
+            (a, x) => a + x.totalSlotOptions,
+            0,
+          ),
+        },
+      });
+    }
+
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      businessId,
+      branchId: branchId ?? null,
+      anchorFirstWeekdayYmd: anchorYmd,
+      daysComputed: dayCount,
+      staffCount: staffPayload.length,
+      staff: staffPayload,
+    };
+
+    if (printToServerConsole || this.config.get<string>('LOG_STAFF_SCHEDULE_SNAPSHOT') === '1') {
+      this.printScheduleSnapshotHebrew(payload);
+    }
+
+    return payload;
+  }
+
+  /** יום עבודה הבא (ב״–ו׳) ביומן של אזור העסק — תואם את חישוב הזמינות. */
+  private nextFirstBusinessWeekdayYmd(timeZone: string): string {
+    const today = DateTime.now().setZone(timeZone).startOf('day');
+    for (let i = 1; i <= 21; i++) {
+      const dt = today.plus({ days: i });
+      const wd = dt.weekday;
+      if (wd >= 1 && wd <= 5) return dt.toISODate()!;
+    }
+    return today.plus({ days: 1 }).toISODate()!;
+  }
+
+  private printScheduleSnapshotHebrew(payload: {
+    generatedAt: string;
+    businessId: string;
+    anchorFirstWeekdayYmd: string;
+    daysComputed: number;
+    staffCount: number;
+    staff: Array<{
+      id: string;
+      firstName: string;
+      lastName: string;
+      workingHoursByDay: Array<{ dayLabelHe: string; startTime: string; endTime: string }>;
+      breaksByDay: Array<{ dayLabelHe: string; startTime: string; endTime: string }>;
+      breakExceptionsInWindow: Array<{ date: string; startTime: string; endTime: string }>;
+      timeOff: Array<{
+        startDate: string;
+        endDate: string;
+        isAllDay: boolean;
+        reason: string | null;
+      }>;
+      servicesAvailability: Array<{
+        serviceName: string;
+        totalSlotOptions: number;
+        perDay: Array<{ date: string; slotCount: number; slots: string[] }>;
+      }>;
+      summary: { totalSlotOptionsAllServices: number; servicesWithBooking: number };
+    }>;
+  }): void {
+    console.log('\n═════════ צילום לוח עבודה / Staff schedule snapshot ═════════');
+    console.log(
+      `נוצר: ${payload.generatedAt} | יום עיגון: ${payload.anchorFirstWeekdayYmd} | ${payload.daysComputed} ימים`,
+    );
+    console.log(`עסק: ${payload.businessId} | עובדים: ${payload.staffCount}\n`);
+    for (const s of payload.staff) {
+      console.log(`▸ ${s.firstName} ${s.lastName} [${s.id}]`);
+      console.log('  שעות עבודה:');
+      for (const h of s.workingHoursByDay) {
+        console.log(`    ${h.dayLabelHe}: ${h.startTime}–${h.endTime}`);
+      }
+      if (s.breaksByDay.length) {
+        console.log('  הפסקות (שבועיות):');
+        for (const b of s.breaksByDay) {
+          console.log(`    ${b.dayLabelHe}: ${b.startTime}–${b.endTime}`);
+        }
+      }
+      if (s.breakExceptionsInWindow.length) {
+        console.log('  הפסקות לפי תאריך (בחלון הצילום):');
+        for (const e of s.breakExceptionsInWindow) {
+          console.log(`    ${e.date}: ${e.startTime}–${e.endTime}`);
+        }
+      }
+      if (s.timeOff.length) {
+        console.log('  חופש מאושר:');
+        for (const t of s.timeOff) {
+          console.log(`    ${t.startDate} → ${t.endDate} allDay=${t.isAllDay} ${t.reason ?? ''}`);
+        }
+      }
+      console.log('  זמנים פנויים (סלוטים) לפי שירות:');
+      for (const svc of s.servicesAvailability) {
+        console.log(`    ★ ${svc.serviceName} — סה"כ אפשרויות בטווח: ${svc.totalSlotOptions}`);
+        for (const d of svc.perDay) {
+          const preview = d.slots.slice(0, 12).join(', ');
+          const more = d.slotCount > 12 ? ` ... (+${d.slotCount - 12})` : '';
+          console.log(`      ${d.date}: ${d.slotCount} slots [${preview}${more}]`);
+        }
+      }
+      console.log(
+        `  [SUMMARY] bookable services: ${s.summary.servicesWithBooking} | total slot options (all services): ${s.summary.totalSlotOptionsAllServices}\n`,
+      );
+    }
+    console.log('=== End staff schedule snapshot ===\n');
   }
 }

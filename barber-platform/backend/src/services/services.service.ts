@@ -3,15 +3,21 @@ import {
   NotFoundException,
   ForbiddenException,
   ConflictException,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { CacheService } from '../redis/cache.service';
 import { CreateServiceDto } from './dto/create-service.dto';
 import { UpdateServiceDto } from './dto/update-service.dto';
 import { AssignStaffToServiceDto } from './dto/assign-staff.dto';
+import { UpdateServiceBlocksDto } from './dto/update-service-blocks.dto';
 
 @Injectable()
 export class ServicesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: CacheService,
+  ) {}
 
   private slugFromName(name: string): string {
     const base = name
@@ -36,15 +42,23 @@ export class ServicesService {
     const branchId = dto.branchId ?? null;
     let existing = await this.prisma.service.findFirst({
       where: { businessId, branchId, slug, deletedAt: null },
-      include: { staffServices: { include: { staff: true } }, branch: true },
+      include: {
+        staffServices: { include: { staff: true } },
+        staffBlocks: { select: { staffId: true } },
+        branch: true,
+      },
     });
 
     if (existing) {
       if (dto.staffAssignments?.length) {
         await this.assignStaffWithDetails(existing.id, businessId, dto.staffAssignments, existing.branchId);
+        await this.invalidateValidationBundlesForStaffIds(
+          dto.staffAssignments.map((a) => a.staffId),
+          'service_existing_assignments_updated',
+        );
         return this.findById(existing.id);
       }
-      return existing;
+      return this.serializeServiceListRow(existing);
     }
 
     const maxOrder = await this.prisma.service.aggregate({
@@ -69,15 +83,20 @@ export class ServicesService {
       },
       include: {
         staffServices: { include: { staff: true } },
+        staffBlocks: { select: { staffId: true } },
         branch: true,
       },
     });
 
     if (dto.staffAssignments?.length) {
       await this.assignStaffWithDetails(service.id, businessId, dto.staffAssignments, service.branchId);
+      await this.invalidateValidationBundlesForStaffIds(
+        dto.staffAssignments.map((a) => a.staffId),
+        'service_created_with_staff_assignments',
+      );
       return this.findById(service.id);
     }
-    return service;
+    return this.serializeServiceListRow(service);
   }
 
   private async assignStaffWithDetails(
@@ -133,28 +152,44 @@ export class ServicesService {
     if (branchId !== undefined) where.branchId = branchId;
     if (!includeInactive) where.isActive = true;
 
-    return this.prisma.service.findMany({
+    const rows = await this.prisma.service.findMany({
       where,
       include: {
         staffServices: { include: { staff: true } },
+        staffBlocks: { select: { staffId: true } },
         branch: true,
       },
       orderBy: { sortOrder: 'asc' },
     });
+    return rows.map((s) => this.serializeServiceListRow(s));
   }
 
-  async findById(id: string) {
+  private serializeServiceListRow(
+    s: Record<string, unknown> & { staffBlocks?: { staffId: string }[] },
+  ) {
+    const { staffBlocks, ...rest } = s;
+    return {
+      ...rest,
+      blockedStaffIds: (staffBlocks ?? []).map((b) => b.staffId),
+    };
+  }
+
+  async findById(id: string, viewerBusinessId?: string) {
     const service = await this.prisma.service.findUnique({
       where: { id, deletedAt: null },
       include: {
         staffServices: { include: { staff: true } },
+        staffBlocks: { select: { staffId: true } },
         category: true,
       },
     });
     if (!service) {
       throw new NotFoundException('Service not found');
     }
-    return service;
+    if (viewerBusinessId && service.businessId !== viewerBusinessId) {
+      throw new ForbiddenException('Service does not belong to this business');
+    }
+    return this.serializeServiceListRow(service);
   }
 
   async update(id: string, businessId: string, dto: UpdateServiceDto) {
@@ -170,17 +205,27 @@ export class ServicesService {
     if (dto.color !== undefined) data.color = dto.color;
     if (dto.isActive !== undefined) data.isActive = dto.isActive;
 
-    return this.prisma.service.update({
+    const updated = await this.prisma.service.update({
       where: { id },
       data,
       include: {
         staffServices: { include: { staff: true } },
+        staffBlocks: { select: { staffId: true } },
       },
     });
+    await this.invalidateValidationBundlesForServiceStaff(
+      id,
+      'service_metadata_updated',
+    );
+    return this.serializeServiceListRow(updated);
   }
 
   async delete(id: string, businessId: string) {
     await this.ensureServiceBelongsToBusiness(id, businessId);
+    await this.invalidateValidationBundlesForServiceStaff(
+      id,
+      'service_deleted',
+    );
     await this.prisma.service.update({
       where: { id },
       data: { deletedAt: new Date(), isActive: false },
@@ -230,8 +275,104 @@ export class ServicesService {
       service.branchId,
       true,
     );
+    await this.invalidateValidationBundlesForStaffIds(
+      staffAssignments.map((a) => a.staffId),
+      'service_staff_assignments_replaced',
+    );
 
     return this.findById(serviceId);
+  }
+
+  async updateAvailabilityBlocks(
+    serviceId: string,
+    businessId: string,
+    dto: UpdateServiceBlocksDto,
+  ) {
+    await this.ensureServiceBelongsToBusiness(serviceId, businessId);
+    const service = await this.prisma.service.findUnique({
+      where: { id: serviceId, deletedAt: null },
+      select: { id: true, branchId: true },
+    });
+    if (!service) throw new NotFoundException('Service not found');
+
+    const blockedStaffIds = dto.blockAllStaff ? [] : [...new Set(dto.blockedStaffIds)];
+
+    if (blockedStaffIds.length > 0) {
+      const staffRows = await this.prisma.staff.findMany({
+        where: {
+          id: { in: blockedStaffIds },
+          businessId,
+          deletedAt: null,
+        },
+        select: { id: true, branchId: true },
+      });
+      if (staffRows.length !== blockedStaffIds.length) {
+        throw new BadRequestException('One or more staff not found in this business');
+      }
+      if (service.branchId) {
+        const wrong = staffRows.filter((s) => s.branchId && s.branchId !== service.branchId);
+        if (wrong.length > 0) {
+          throw new BadRequestException('Blocked staff must belong to the same branch as the service');
+        }
+      }
+    }
+
+    const beforeLinks = await this.prisma.staffService.findMany({
+      where: { serviceId },
+      select: { staffId: true },
+    });
+    const affectedStaff = new Set(beforeLinks.map((l) => l.staffId));
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.service.update({
+        where: { id: serviceId },
+        data: { blockAllStaff: dto.blockAllStaff },
+      });
+      await tx.serviceStaffBlock.deleteMany({ where: { serviceId } });
+      if (!dto.blockAllStaff && blockedStaffIds.length > 0) {
+        await tx.serviceStaffBlock.createMany({
+          data: blockedStaffIds.map((staffId) => ({ serviceId, staffId })),
+        });
+      }
+      if (dto.blockAllStaff) {
+        await tx.staffService.deleteMany({ where: { serviceId } });
+      } else if (blockedStaffIds.length > 0) {
+        await tx.staffService.deleteMany({
+          where: { serviceId, staffId: { in: blockedStaffIds } },
+        });
+      }
+    });
+
+    await this.invalidateValidationBundlesForStaffIds(
+      [...affectedStaff, ...blockedStaffIds],
+      'service_availability_blocks_updated',
+    );
+
+    return this.findById(serviceId);
+  }
+
+  private async invalidateValidationBundlesForServiceStaff(
+    serviceId: string,
+    reason: string,
+  ): Promise<void> {
+    const rows = await this.prisma.staffService.findMany({
+      where: { serviceId },
+      select: { staffId: true },
+    });
+    await this.invalidateValidationBundlesForStaffIds(
+      rows.map((row) => row.staffId),
+      reason,
+    );
+  }
+
+  private async invalidateValidationBundlesForStaffIds(
+    staffIds: string[],
+    reason: string,
+  ): Promise<void> {
+    const unique = [...new Set(staffIds.filter(Boolean))];
+    for (const staffId of unique) {
+      await this.cache.invalidateStaffValidationBundleForStaff(staffId, reason);
+    }
   }
 
   private async ensureBusinessExists(businessId: string) {
@@ -255,10 +396,14 @@ export class ServicesService {
     const slug = this.slugFromName(source.name);
     const existing = await this.prisma.service.findFirst({
       where: { businessId, branchId: targetBranchId, slug, deletedAt: null },
-      include: { staffServices: { include: { staff: true } }, branch: true },
+      include: {
+        staffServices: { include: { staff: true } },
+        staffBlocks: { select: { staffId: true } },
+        branch: true,
+      },
     });
     if (existing) {
-      return existing;
+      return this.serializeServiceListRow(existing);
     }
 
     const maxOrder = await this.prisma.service.aggregate({
@@ -267,7 +412,7 @@ export class ServicesService {
     });
     const sortOrder = (maxOrder._max?.sortOrder ?? -1) + 1;
 
-    return this.prisma.service.create({
+    const created = await this.prisma.service.create({
       data: {
         businessId,
         branchId: targetBranchId,
@@ -282,12 +427,15 @@ export class ServicesService {
         bufferAfterMinutes: source.bufferAfterMinutes,
         isActive: source.isActive,
         sortOrder,
+        blockAllStaff: false,
       },
       include: {
         staffServices: { include: { staff: true } },
+        staffBlocks: { select: { staffId: true } },
         branch: true,
       },
     });
+    return this.serializeServiceListRow(created);
   }
 
   private async ensureBranchBelongsToBusiness(branchId: string, businessId: string) {

@@ -8,6 +8,7 @@ import type {
   AutomationJobPayload,
 } from './automation.types';
 import { CreateAutomationDto } from './dto/create-automation.dto';
+import { bullmqSafeJobId } from '../common/bullmq-job-id';
 import { UpdateAutomationDto } from './dto/update-automation.dto';
 
 @Injectable()
@@ -140,7 +141,7 @@ export class AutomationService {
         } as AutomationJobPayload,
         {
           delay,
-          jobId: `reminder:${appointmentId}:${rule.id}`,
+          jobId: bullmqSafeJobId('reminder', appointmentId, rule.id),
           removeOnComplete: { count: 500 },
         },
       );

@@ -25,6 +25,7 @@ export class CustomersController {
   constructor(private readonly customers: CustomersService) {}
 
   @Post()
+  @Roles('owner', 'manager')
   @Permissions('customer:create', 'customer:manage')
   async create(@Body() dto: CreateCustomerDto) {
     return this.customers.create(dto.businessId, dto);

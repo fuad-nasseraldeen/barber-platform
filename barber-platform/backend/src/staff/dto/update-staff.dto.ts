@@ -8,6 +8,9 @@ import {
   Min,
   MinLength,
   MaxLength,
+  IsDateString,
+  IsIn,
+  ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -87,4 +90,14 @@ export class UpdateStaffDto {
   @IsNumber()
   @Min(0)
   monthlyTargetRevenue?: number;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsDateString()
+  birthDate?: string | null;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== undefined)
+  @IsIn(['MALE', 'FEMALE', 'OTHER'])
+  gender?: string | null;
 }

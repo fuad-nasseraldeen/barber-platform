@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CacheService, CACHE_TTL } from '../redis/cache.service';
@@ -14,6 +15,7 @@ import { InviteStaffDto } from './dto/invite-staff.dto';
 import { InviteStaffByPhoneDto } from './dto/invite-staff-by-phone.dto';
 import { OtpService } from '../otp/otp.service';
 import { normalizePhone } from '../common/validators/phone.validator';
+import { StaffService } from '../staff/staff.service';
 
 const INVITE_EXPIRY_DAYS = 7;
 
@@ -23,6 +25,7 @@ export class BusinessService {
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
     private readonly otp: OtpService,
+    private readonly staffService: StaffService,
   ) {}
 
   async create(userId: string, dto: CreateBusinessDto) {
@@ -47,8 +50,8 @@ export class BusinessService {
         name: dto.name,
         slug,
         type: (dto.type as BusinessType) ?? 'BARBER_SHOP',
-        timezone: dto.timezone ?? 'UTC',
-        locale: dto.locale ?? 'en',
+        timezone: dto.timezone ?? 'Asia/Jerusalem',
+        locale: dto.locale ?? 'he',
         currency: dto.currency ?? 'USD',
       },
     });
@@ -83,7 +86,7 @@ export class BusinessService {
     const ownerPhone = dto.ownerPhone
       ? normalizePhone(dto.ownerPhone.replace(/\s/g, ''))
       : user?.phone ?? null;
-    await this.prisma.staff.create({
+    const ownerStaff = await this.prisma.staff.create({
       data: {
         businessId: business.id,
         branchId: mainBranch.id,
@@ -94,6 +97,7 @@ export class BusinessService {
         avatarUrl: user?.avatarUrl ?? undefined,
       },
     });
+    await this.staffService.applyDefaultWorkingScheduleForNewStaff(ownerStaff.id, ownerStaff.branchId);
 
     if (dto.owner) {
       const updateData: { firstName?: string; lastName?: string; birthDate?: Date; gender?: string; phone?: string; phoneVerified?: boolean } = {};
@@ -133,12 +137,16 @@ export class BusinessService {
     return `${base || 'business'}-${suffix}`;
   }
 
-  async findBySlug(slug: string) {
+  async findBySlug(slug: string, viewerBusinessId?: string) {
     const cacheKey = CacheService.keys.business(slug);
     const cached = await this.cache.get<Awaited<ReturnType<typeof this.fetchBusinessBySlug>>>(cacheKey);
-    if (cached) return cached;
-    const business = await this.fetchBusinessBySlug(slug);
-    await this.cache.set(cacheKey, business, CACHE_TTL.BUSINESS);
+    const business = cached ?? (await this.fetchBusinessBySlug(slug));
+    if (viewerBusinessId && business.id !== viewerBusinessId) {
+      throw new ForbiddenException('Business does not match your session');
+    }
+    if (!cached) {
+      await this.cache.set(cacheKey, business, CACHE_TTL.BUSINESS);
+    }
     return business;
   }
 

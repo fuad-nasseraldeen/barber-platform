@@ -1,78 +1,96 @@
-# Barbershop SaaS Platform
+# Barbershop SaaS Platform — Backend
 
-Production-grade multi-tenant SaaS platform for service-based businesses (barber shops, beauty salons, gyms, clinics).
+Production-grade NestJS API for the multi-tenant barber shop SaaS platform.
 
 ## Tech Stack
 
-- **Backend**: NestJS, TypeScript, Prisma ORM, PostgreSQL, Redis, BullMQ, Stripe, Supabase Storage
-- **Frontend** (Phase 10): Next.js 14, TypeScript, TailwindCSS, TanStack Query, Zustand
+- **NestJS 10**, TypeScript
+- **Prisma ORM**, PostgreSQL (Supabase)
+- **Redis** (Upstash), BullMQ
+- **Stripe**, Supabase Storage
+- **Passport** (JWT, Google OAuth)
+- **Swagger** (API docs)
 
-## Phase 1: Database Architecture ✓
+## Quick Start
 
-Phase 1 delivers the complete database schema, migrations, and infrastructure.
+### Prerequisites
 
-### Design Decisions
+- Node.js 18+
+- PostgreSQL (Supabase recommended)
+- Redis (Upstash recommended, or local)
 
-1. **Multi-tenancy**: Row-level tenancy with `tenantId` on all tenant-scoped tables. Single database for cost efficiency; Prisma middleware will enforce tenant context.
-
-2. **RBAC**: Role-Permission model. System roles (null `tenantId`) are shared; tenant-specific roles allow customization. Permissions use `resource:action` slugs (e.g., `booking:create`).
-
-3. **Slot locking**: `BookingSlot` table with unique `slotKey` prevents double-booking. Slot keys follow `tenantId:staffId:YYYY-MM-DD:HH:mm`.
-
-4. **Soft delete**: `deletedAt` on core entities (Tenant, User, Location, Staff, Service, Customer) for recoverable deletions.
-
-5. **Indexing**: Composite indexes on `(tenantId, startTime)`, `(tenantId, status)` for booking queries; `(slotKey)` unique for locking.
-
-### Quick Start
+### 1. Install
 
 ```bash
-# 1. Install dependencies
 npm install
+```
 
-# 2. Start PostgreSQL and Redis (requires Docker)
-npm run docker:up
+### 2. Environment
 
-# 3. Run migrations
+Copy `.env.example` to `.env` and configure:
+
+```bash
+cp .env.example .env
+```
+
+Required variables:
+
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL (often Supabase **pooler** for the running app) |
+| `DIRECT_URL` | Supabase **direct** `db.*.supabase.co:5432` — required for `prisma migrate` when `DATABASE_URL` uses the pooler |
+| `REDIS_URL` or `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`, `REDIS_TLS` | Redis |
+| `JWT_SECRET` | JWT signing key |
+| `GOOGLE_CLIENT_ID` | Google OAuth |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_BUCKET` | Supabase Storage |
+
+### 3. Database
+
+```bash
+npm run prisma:generate
 npm run prisma:migrate
+# Optional: npm run prisma:seed
+```
 
-# 4. Seed permissions
-npm run prisma:seed
+### 4. Run
 
-# 5. Start development server
+```bash
 npm run start:dev
 ```
 
-### Environment
+API runs at **http://localhost:3000**. Swagger at `http://localhost:3000/api` (if enabled).
 
-Copy `.env.example` to `.env` and adjust values. Default `DATABASE_URL` matches Docker Compose:
+## Scripts
 
+| Script | Description |
+|--------|-------------|
+| `npm run start:dev` | Development with watch |
+| `npm run start:prod` | Production (`node dist/main`) |
+| `npm run build` | Build for production |
+| `npm run clean` | Remove `dist/` (fresh build) |
+| `npm run prisma:generate` | Generate Prisma Client |
+| `npm run prisma:migrate` | Run migrations (dev) |
+| `npm run prisma:migrate:prod` | Run migrations (prod) |
+| `npm run prisma:studio` | Prisma Studio |
+| `npm run prisma:seed` | Seed database |
+
+## Windows / ENOTEMPTY
+
+On Windows, `nest start --watch` may fail with `ENOTEMPTY: directory not empty, rmdir dist/prisma`. This is fixed by setting `deleteOutDir: false` in `nest-cli.json`. For a clean build:
+
+```bash
+npm run clean && npm run build
 ```
-DATABASE_URL="postgresql://barber:barber_secret@localhost:5432/barber_saas?schema=public"
-REDIS_URL="redis://localhost:6379"
-```
 
-### Database Schema Overview
+## Deployment
 
-| Domain | Entities |
-|--------|----------|
-| Tenant & Identity | Tenant, User, TenantUser, Role, Permission, RolePermission, RefreshToken |
-| Business | Location, ServiceCategory, Service, Staff, StaffService |
-| Availability | StaffAvailability |
-| Booking | Customer, Booking, BookingSlot |
-| Waitlist | Waitlist |
-| Payments | Payment, Subscription |
-| System | Notification, AuditLog |
+See [docs/RENDER_DEPLOY.md](docs/RENDER_DEPLOY.md) for Render deployment.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full design.
+## Documentation
 
-### Next Phases
-
-- **Phase 2**: Authentication System
-- **Phase 3**: Business Management
-- **Phase 4**: Staff Management
-- **Phase 5**: Booking Engine
-- **Phase 6**: Availability Engine
-- **Phase 7**: Payments
-- **Phase 8**: Notifications
-- **Phase 9**: Analytics
-- **Phase 10**: Frontend Dashboards
+- [Architecture](docs/ARCHITECTURE.md)
+- [Auth](docs/AUTH.md)
+- [Migrations](docs/MIGRATIONS.md)
+- [Employee Permissions](docs/EMPLOYEE_PERMISSIONS.md)
+- [Schema Design](docs/SCHEMA_DESIGN.md)
+- [Performance](docs/PERFORMANCE_ARCHITECTURE.md)

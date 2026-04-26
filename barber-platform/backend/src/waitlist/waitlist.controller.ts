@@ -12,6 +12,7 @@ import { WaitlistService } from './waitlist.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles, Permissions } from '../common/decorators/roles.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { CreateWaitlistDto } from './dto/create-waitlist.dto';
 import { UpdateWaitlistDto } from './dto/update-waitlist.dto';
 import { CancelWaitlistDto } from './dto/cancel-waitlist.dto';
@@ -48,8 +49,11 @@ export class WaitlistController {
 
   @Get(':id')
   @Permissions('waitlist:read')
-  async findById(@Param('id') id: string) {
-    return this.waitlist.findById(id);
+  async findById(
+    @Param('id') id: string,
+    @CurrentUser('businessId') viewerBusinessId: string | undefined,
+  ) {
+    return this.waitlist.findById(id, viewerBusinessId);
   }
 
   @Patch(':id')

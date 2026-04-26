@@ -1,13 +1,18 @@
 import {
   IsString,
   IsOptional,
-  IsEmail,
   IsUUID,
   IsDateString,
   IsIn,
   Matches,
   MaxLength,
+  MinLength,
+  Allow,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
+
+const trim = ({ value }: { value: unknown }) =>
+  typeof value === 'string' ? value.trim() : value;
 
 export class CreateCustomerDto {
   @IsUUID()
@@ -17,31 +22,38 @@ export class CreateCustomerDto {
   @IsUUID()
   branchId?: string;
 
-  @IsEmail()
-  email: string;
+  /** Legacy key from older clients / proxies. Ignored — server always assigns internal placeholder email. */
+  @Allow()
+  email?: unknown;
 
-  @IsOptional()
+  /** Accepted and ignored (for future admin flows). Not validated; not persisted. */
+  @Allow()
+  adminReserved?: unknown;
+
+  @Transform(trim)
   @IsString()
+  @MinLength(1)
   @MaxLength(100)
-  firstName?: string;
+  firstName: string;
 
-  @IsOptional()
+  @Transform(trim)
   @IsString()
+  @MinLength(1)
   @MaxLength(100)
-  lastName?: string;
+  lastName: string;
 
-  @IsOptional()
+  @Transform(trim)
   @IsString()
+  @MinLength(6)
   @MaxLength(30)
-  phone?: string;
+  phone: string;
 
   @IsOptional()
   @IsDateString()
   birthDate?: string;
 
-  @IsOptional()
   @IsIn(['MALE', 'FEMALE', 'OTHER'])
-  gender?: string;
+  gender: string;
 
   @IsOptional()
   @IsString()

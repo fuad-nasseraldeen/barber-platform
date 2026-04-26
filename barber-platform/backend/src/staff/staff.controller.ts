@@ -30,10 +30,13 @@ import { UpdateStaffDto } from './dto/update-staff.dto';
 import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
 import { StaffServicesDto } from './dto/staff-services.dto';
 import { StaffWorkingHoursDto } from './dto/staff-working-hours.dto';
-import { StaffBreakDto } from './dto/staff-break.dto';
+import { StaffWorkingHoursBatchDto } from './dto/staff-working-hours-batch.dto';
+import { StaffBreakDto, StaffWeeklyBreakMeDto } from './dto/staff-break.dto';
 import {
   CreateStaffBreakExceptionDto,
   CreateStaffBreakExceptionBulkDto,
+  CreateStaffBreakExceptionMeDto,
+  CreateStaffBreakExceptionBulkMeDto,
 } from './dto/staff-break-exception.dto';
 import {
   StaffBreakBulkWeeklyDto,
@@ -62,6 +65,26 @@ export class StaffController {
   @UseGuards(JwtAuthGuard)
   async getMe(@CurrentUser('id') userId: string) {
     return this.staff.findMyProfile(userId);
+  }
+
+  /**
+   * דיבוג / ניטור: עובדים, שעות, וספירת סלוטים לפי שירות (5 ימי עבודה UTC ראשונים מהיום).
+   * חייב לעמוד לפני @Get(':id') ולפני @Get(':id/breaks') — אחרת Express מפרש את "schedule-snapshot" כ־:id.
+   * query: print=1 — גם console.log בשרת (או LOG_STAFF_SCHEDULE_SNAPSHOT=1 ב-.env).
+   */
+  @Get('schedule-snapshot')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('owner', 'manager', 'staff')
+  @Permissions('staff:read')
+  async scheduleSnapshot(
+    @Query('businessId') businessId: string,
+    @Query('branchId') branchId?: string,
+    @Query('print') print?: string,
+  ) {
+    if (!businessId) {
+      throw new BadRequestException('businessId is required');
+    }
+    return this.staff.getScheduleSnapshot(businessId, branchId, print === '1');
   }
 
   @Patch('me/services')
@@ -95,22 +118,31 @@ export class StaffController {
     return this.staff.getMyBreaksByUserId(userId, startDate, endDate);
   }
 
-  @Post('me/breaks')
-  @UseGuards(JwtAuthGuard)
-  async addMyBreakException(
-    @CurrentUser('id') userId: string,
-    @Body() dto: Omit<CreateStaffBreakExceptionDto, 'staffId'> & { businessId: string },
-  ) {
-    return this.staff.addBreakExceptionByUserId(userId, dto);
-  }
-
   @Post('me/breaks/bulk')
   @UseGuards(JwtAuthGuard)
   async addMyBreakExceptionBulk(
     @CurrentUser('id') userId: string,
-    @Body() dto: Omit<CreateStaffBreakExceptionBulkDto, 'staffId'> & { businessId: string },
+    @Body() dto: CreateStaffBreakExceptionBulkMeDto,
   ) {
     return this.staff.addBreakExceptionBulkByUserId(userId, dto);
+  }
+
+  @Post('me/breaks/weekly')
+  @UseGuards(JwtAuthGuard)
+  async addMyWeeklyBreak(
+    @CurrentUser('id') userId: string,
+    @Body() dto: StaffWeeklyBreakMeDto,
+  ) {
+    return this.staff.addWeeklyBreakByUserId(userId, dto);
+  }
+
+  @Post('me/breaks')
+  @UseGuards(JwtAuthGuard)
+  async addMyBreakException(
+    @CurrentUser('id') userId: string,
+    @Body() dto: CreateStaffBreakExceptionMeDto,
+  ) {
+    return this.staff.addBreakExceptionByUserId(userId, dto);
   }
 
   @Delete('me/breaks/exception/:id')
@@ -120,15 +152,6 @@ export class StaffController {
     @Param('id') id: string,
   ) {
     return this.staff.deleteBreakExceptionByUserId(userId, id);
-  }
-
-  @Post('me/breaks/weekly')
-  @UseGuards(JwtAuthGuard)
-  async addMyWeeklyBreak(
-    @CurrentUser('id') userId: string,
-    @Body() dto: { businessId: string; dayOfWeek: number; startTime: string; endTime: string },
-  ) {
-    return this.staff.addWeeklyBreakByUserId(userId, dto);
   }
 
   @Delete('me/breaks/weekly/:id')
@@ -275,20 +298,20 @@ export class StaffController {
     return this.staff.removeStaffService(staffId, staffServiceId, dto.businessId);
   }
 
+  @Post('working-hours/batch')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('owner', 'manager')
+  @Permissions('staff:manage')
+  async setWorkingHoursBatch(@Body() dto: StaffWorkingHoursBatchDto) {
+    return this.staff.setWorkingHoursBatch(dto);
+  }
+
   @Post('working-hours')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('owner', 'manager')
   @Permissions('staff:manage')
   async setWorkingHours(@Body() dto: StaffWorkingHoursDto) {
     return this.staff.setWorkingHours(dto);
-  }
-
-  @Post('breaks')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('owner', 'manager')
-  @Permissions('staff:manage')
-  async addBreak(@Body() dto: StaffBreakDto) {
-    return this.staff.addBreak(dto);
   }
 
   @Post('breaks/exception')
@@ -321,6 +344,14 @@ export class StaffController {
   @Permissions('staff:manage')
   async addBreakExceptionBulk(@Body() dto: CreateStaffBreakExceptionBulkDto) {
     return this.staff.addBreakExceptionBulk(dto);
+  }
+
+  @Post('breaks')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('owner', 'manager')
+  @Permissions('staff:manage')
+  async addBreak(@Body() dto: StaffBreakDto) {
+    return this.staff.addBreak(dto);
   }
 
   @Delete('breaks/weekly/:id')
@@ -399,8 +430,11 @@ export class StaffController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('owner', 'manager', 'staff')
   @Permissions('staff:read')
-  async findById(@Param('id') id: string) {
-    return this.staff.findById(id);
+  async findById(
+    @Param('id') id: string,
+    @CurrentUser('businessId') viewerBusinessId: string | undefined,
+  ) {
+    return this.staff.findById(id, viewerBusinessId);
   }
 
   @Post(':id/photo')

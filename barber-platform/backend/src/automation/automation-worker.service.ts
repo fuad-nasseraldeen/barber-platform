@@ -2,6 +2,7 @@ import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Worker, Job } from 'bullmq';
 import { enableRedis } from '../common/redis-config';
+import { logRedisConnectionConfig, resolveRedisConnection } from '../common/redis-connection';
 import { PrismaService } from '../prisma/prisma.service';
 import { SmsService } from '../sms/sms.service';
 import { EmailService } from '../notifications/email.service';
@@ -213,12 +214,8 @@ export class AutomationWorkerService implements OnModuleDestroy {
   }
 
   private getConnection() {
-    const url = this.config.get('REDIS_URL');
-    if (url) return { url };
-    return {
-      host: this.config.get('REDIS_HOST', 'localhost'),
-      port: parseInt(this.config.get('REDIS_PORT', '6379'), 10),
-      password: this.config.get('REDIS_PASSWORD') || undefined,
-    };
+    const resolved = resolveRedisConnection(this.config, 'worker.automation');
+    logRedisConnectionConfig(resolved);
+    return resolved.options;
   }
 }
