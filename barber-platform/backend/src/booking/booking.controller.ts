@@ -82,7 +82,11 @@ export class BookingController {
   @Get('appointments')
   @Roles('owner', 'manager', 'staff')
   @Permissions('appointment:read')
-  async listAppointments(@Query() query: ListAppointmentsQueryDto) {
+  async listAppointments(
+    @Query() query: ListAppointmentsQueryDto,
+    @CurrentUser('id') viewerUserId: string,
+    @CurrentUser('role') viewerRole: string | undefined,
+  ) {
     return this.booking.findAll(query.businessId, {
       branchId: query.branchId,
       startDate: query.startDate,
@@ -92,6 +96,9 @@ export class BookingController {
       customerId: query.customerId,
       limit: query.limit,
       page: query.page,
+    }, {
+      userId: viewerUserId,
+      role: viewerRole,
     });
   }
 
@@ -339,8 +346,14 @@ export class BookingController {
   async updateAppointmentStatus(
     @Param('id') id: string,
     @Body() dto: UpdateAppointmentStatusDto,
+    @CurrentUser('id') actorUserId: string,
   ) {
-    return this.booking.updateAppointmentStatus(id, dto.businessId, dto.status);
+    return this.booking.updateAppointmentStatus(
+      id,
+      dto.businessId,
+      dto.status,
+      actorUserId,
+    );
   }
 
   @Patch('appointments/:id')

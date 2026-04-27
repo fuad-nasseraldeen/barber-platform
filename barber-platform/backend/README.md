@@ -84,7 +84,26 @@ npm run clean && npm run build
 
 ## Deployment
 
-See [docs/RENDER_DEPLOY.md](docs/RENDER_DEPLOY.md) for Render deployment.
+### Railway (Backend only)
+
+This repository is a monorepo. Railway should deploy **only** the backend service.
+
+1. Create Railway project/service from this repository.
+2. Keep service root at repository root (the root has `railway.toml` and `nixpacks.toml` that force backend-only build).
+3. Set required backend environment variables (`DATABASE_URL`, `DIRECT_URL`, `JWT_SECRET`, Redis variables, etc.).
+4. Set `CORS_ORIGIN` to your Vercel admin domains (comma-separated), for example:
+
+```bash
+CORS_ORIGIN=https://your-admin.vercel.app,https://admin.yourdomain.com
+```
+
+Build/start are already configured to run only `backend/`:
+
+- Install: `npm ci --prefix backend`
+- Build: `npm run --prefix backend build`
+- Start: `npm run --prefix backend start:prod`
+
+If you still use Render, see [docs/RENDER_DEPLOY.md](docs/RENDER_DEPLOY.md).
 
 ## Documentation
 

@@ -1475,6 +1475,10 @@ export class BookingService {
       limit?: number;
       page?: number;
     },
+    viewer?: {
+      userId?: string;
+      role?: string;
+    },
   ) {
     const limit = opts?.limit ?? 50;
     const page = opts?.page ?? 1;
@@ -1512,7 +1516,7 @@ export class BookingService {
       ? { startTime: 'asc' as const }
       : { startTime: 'desc' as const };
 
-    const [appointments, total] = await Promise.all([
+    const [rawAppointments, total] = await Promise.all([
       this.prisma.appointment.findMany({
         where,
         include: {
@@ -1527,6 +1531,45 @@ export class BookingService {
       }),
       this.prisma.appointment.count({ where }),
     ]);
+
+    let appointments = rawAppointments;
+    if (viewer?.role === 'staff') {
+      const [business, viewerStaff] = await Promise.all([
+        this.prisma.business.findUnique({
+          where: { id: businessId },
+          select: { settings: true },
+        }),
+        viewer.userId
+          ? this.prisma.staff.findFirst({
+              where: {
+                businessId,
+                userId: viewer.userId,
+                deletedAt: null,
+              },
+              select: { branchId: true },
+            })
+          : Promise.resolve(null),
+      ]);
+      const generalSettings =
+        ((business?.settings as { generalSettings?: { showCustomerPhoneToEmployees?: boolean } } | null)
+          ?.generalSettings) ?? {};
+      const showCustomerPhoneToEmployees =
+        generalSettings.showCustomerPhoneToEmployees === true;
+      const viewerBranchId = viewerStaff?.branchId ?? null;
+
+      appointments = rawAppointments.map((appointment) => {
+        const appointmentBranchId = appointment.branchId ?? appointment.branch?.id ?? null;
+        const sameBranch = appointmentBranchId === viewerBranchId;
+        const allowPhone = showCustomerPhoneToEmployees && sameBranch;
+        return {
+          ...appointment,
+          customer: {
+            ...appointment.customer,
+            phone: allowPhone ? appointment.customer.phone : null,
+          },
+        };
+      });
+    }
 
     return { appointments, total, page, limit };
   }
@@ -3108,6 +3151,16 @@ export class BookingService {
               const dateYmd = formatBusinessTime(hold.startTime, tz, 'yyyy-MM-dd');
               const startHhmm = formatBusinessTime(hold.startTime, tz, 'HH:mm');
               const slotKey = `${hold.businessId}:${hold.staffId}:${dateYmd}:${startHhmm}`;
+              const businessSettingsRow = await tx.business.findUnique({
+                where: { id: hold.businessId },
+                select: { settings: true },
+              });
+              const requireCustomerArrivalConfirmation =
+                (
+                  (businessSettingsRow?.settings as {
+                    generalSettings?: { requireCustomerArrivalConfirmation?: boolean };
+                  } | null)?.generalSettings?.requireCustomerArrivalConfirmation
+                ) === true;
 
               await tx.$executeRawUnsafe('SAVEPOINT booking_confirm_appt');
               try {
@@ -3129,6 +3182,17 @@ export class BookingService {
                   },
                   select: BookingService.appointmentInsertSelect,
                 });
+                try {
+                  await tx.$executeRaw`
+                    UPDATE appointments
+                    SET "confirmationStatus" = ${
+                      requireCustomerArrivalConfirmation ? 'PENDING' : 'NOT_REQUIRED'
+                    }::"AppointmentConfirmationStatus"
+                    WHERE id = ${created.id}
+                  `;
+                } catch {
+                  // Backward-compatible deployment: ignore until migration is applied.
+                }
 
                 if (updateTimeSlotsInBookTx) {
                   await this.timeSlots.bookSlotsInTransaction(
@@ -4565,6 +4629,7 @@ export class BookingService {
     appointmentId: string,
     businessId: string,
     status: 'COMPLETED' | 'NO_SHOW',
+    actorUserId?: string,
   ) {
     const appointment = await this.prisma.appointment.findUnique({
       where: { id: appointmentId },
@@ -4605,6 +4670,15 @@ export class BookingService {
       }
     }
 
+    const completedByStaffId = actorUserId
+      ? (
+          await this.prisma.staff.findFirst({
+            where: { businessId, userId: actorUserId, deletedAt: null },
+            select: { id: true },
+          })
+        )?.id ?? null
+      : null;
+
     const updated = await this.prisma.appointment.update({
       where: { id: appointmentId },
       data: { status },
@@ -4614,6 +4688,26 @@ export class BookingService {
         customer: { select: { firstName: true, lastName: true } },
       },
     });
+    try {
+      if (status === 'COMPLETED') {
+        await this.prisma.$executeRaw`
+          UPDATE appointments
+          SET "completedAt" = NOW(),
+              "noShowAt" = NULL,
+              "completedByStaffId" = ${completedByStaffId}
+          WHERE id = ${appointmentId}
+        `;
+      } else {
+        await this.prisma.$executeRaw`
+          UPDATE appointments
+          SET "noShowAt" = NOW(),
+              "completedAt" = NULL
+          WHERE id = ${appointmentId}
+        `;
+      }
+    } catch {
+      // Backward-compatible deployment: ignore until migration is applied.
+    }
 
     this.customerVisits
       .createFromAppointment(appointmentId, status, price)

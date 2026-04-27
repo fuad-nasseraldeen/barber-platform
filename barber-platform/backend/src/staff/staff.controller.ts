@@ -50,6 +50,7 @@ import { RequestVacationDto } from './dto/request-vacation.dto';
 import { VacationActionDto } from './dto/vacation-action.dto';
 import { RemoveStaffServiceDto } from './dto/remove-staff-service.dto';
 import { AddMyServiceDto } from './dto/add-my-service.dto';
+import { StaffEarningsQueryDto } from './dto/staff-earnings-query.dto';
 
 @Controller('staff')
 export class StaffController {
@@ -424,6 +425,23 @@ export class StaffController {
       query.page,
       query.limit,
     );
+  }
+
+  @Get(':id/earnings-summary')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('owner', 'manager')
+  @Permissions('staff:read')
+  async getStaffEarningsSummary(
+    @Param('id') id: string,
+    @Query() query: StaffEarningsQueryDto,
+  ) {
+    return this.staff.getStaffEarningsSummary({
+      businessId: query.businessId,
+      staffId: id,
+      fromDate: query.fromDate,
+      toDate: query.toDate,
+      compareWithPreviousPeriod: query.compareWithPreviousPeriod === 'true',
+    });
   }
 
   @Get(':id')

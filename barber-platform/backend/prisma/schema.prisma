@@ -779,6 +779,13 @@ model Appointment {
   startTime       DateTime
   endTime         DateTime
   status          AppointmentStatus @default(PENDING)
+  confirmationStatus AppointmentConfirmationStatus @default(NOT_REQUIRED)
+  confirmedAt     DateTime?
+  confirmationChannel String?
+  checkedInAt     DateTime?
+  completedAt     DateTime?
+  noShowAt        DateTime?
+  completedByStaffId String?
   /// Denormalized label (business-local date + start HH:mm). NOT unique — overlaps are enforced by EXCLUDE + hold ranges.
   slotKey         String
   idempotencyKey  String? // optional; unique per business when set (retries)
@@ -809,6 +816,7 @@ model Appointment {
   @@index([branchId])
   @@index([businessId, startTime])
   @@index([businessId, status])
+  @@index([businessId, confirmationStatus])
   @@index([customerId])
   @@index([staffId])
   @@index([staffId, startTime, endTime])
@@ -888,9 +896,18 @@ enum AppointmentStatus {
   PENDING
   CONFIRMED
   IN_PROGRESS
+  CHECKED_IN
   COMPLETED
   CANCELLED
   NO_SHOW
+}
+
+enum AppointmentConfirmationStatus {
+  PENDING
+  CONFIRMED
+  DECLINED
+  EXPIRED
+  NOT_REQUIRED
 }
 
 // =============================================================================

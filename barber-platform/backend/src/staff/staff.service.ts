@@ -31,7 +31,7 @@ import { StaffTimeOffDto } from './dto/staff-time-off.dto';
 import { UpdateMyServicesDto } from './dto/update-my-services.dto';
 import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
 import { RequestVacationDto } from './dto/request-vacation.dto';
-import { VacationStatus } from '@prisma/client';
+import { PaymentStatus, VacationStatus } from '@prisma/client';
 import { DateTime } from 'luxon';
 import {
   addBusinessDaysFromYmd,
@@ -40,6 +40,12 @@ import {
   resolveBusinessTimeZone,
 } from '../common/business-local-time';
 import { endDateOnlyUtcInclusive, parseDateOnlyUtc } from '../common/date-only';
+import {
+  buildPreviousPeriodRange,
+  computeStaffEarningsForRange,
+  percentDelta,
+  type StaffSettlementConfig,
+} from './staff-earnings';
 
 @Injectable()
 export class StaffService {
@@ -287,6 +293,203 @@ export class StaffService {
       throw new ForbiddenException('Staff does not belong to this business');
     }
     return staff;
+  }
+
+  async getStaffEarningsSummary(params: {
+    businessId: string;
+    staffId: string;
+    fromDate: string;
+    toDate: string;
+    compareWithPreviousPeriod?: boolean;
+  }) {
+    await this.ensureStaffBelongsToBusiness(params.staffId, params.businessId);
+
+    const fromDateUtc = parseDateOnlyUtc(params.fromDate.slice(0, 10));
+    const toDateUtc = endDateOnlyUtcInclusive(params.toDate.slice(0, 10));
+    if (toDateUtc.getTime() < fromDateUtc.getTime()) {
+      throw new BadRequestException('toDate must be after fromDate');
+    }
+
+    const business = await this.prisma.business.findUnique({
+      where: { id: params.businessId },
+      select: { settings: true },
+    });
+    const settings = (business?.settings ?? {}) as {
+      generalSettings?: { requireCustomerArrivalConfirmation?: boolean };
+      staffSettlement?: Record<string, Partial<StaffSettlementConfig>>;
+    };
+    const confirmationTrackingEnabled =
+      settings.generalSettings?.requireCustomerArrivalConfirmation === true;
+    const settlement = this.resolveStaffSettlementConfig(
+      settings.staffSettlement?.[params.staffId],
+    );
+
+    const rows = await this.prisma.appointment.findMany({
+      where: {
+        businessId: params.businessId,
+        staffId: params.staffId,
+        startTime: {
+          gte: fromDateUtc,
+          lte: toDateUtc,
+        },
+      },
+      include: {
+        payment: { select: { amount: true, status: true } },
+        service: { select: { name: true, price: true } },
+        customer: { select: { firstName: true, lastName: true, phone: true } },
+      },
+      orderBy: { startTime: 'asc' },
+    });
+
+    const current = computeStaffEarningsForRange({
+      rows: rows.map((row) => ({
+        id: row.id,
+        startTime: row.startTime,
+        status: row.status,
+        confirmationStatus:
+          (row as unknown as { confirmationStatus?: string | null })
+            .confirmationStatus ?? null,
+        servicePrice: Number(row.service.price),
+        paymentStatus: row.payment?.status as PaymentStatus | null | undefined,
+        paymentAmount:
+          row.payment?.amount != null ? Number(row.payment.amount) : null,
+        customer: row.customer,
+        service: row.service,
+      })),
+      confirmationTrackingEnabled,
+      settlement,
+    });
+
+    let previousPeriodComparison:
+      | {
+          fromDate: string;
+          toDate: string;
+          completedAppointmentsCount: number;
+          totalRevenue: number;
+          grossEarnings: number;
+          finalPayable: number;
+          revenueDeltaPercent: number | null;
+          completedDeltaPercent: number | null;
+          payableDeltaPercent: number | null;
+        }
+      | undefined;
+
+    if (params.compareWithPreviousPeriod) {
+      const prevRange = buildPreviousPeriodRange(params.fromDate, params.toDate);
+      const prevFrom = parseDateOnlyUtc(prevRange.fromDate);
+      const prevToInclusive = endDateOnlyUtcInclusive(prevRange.toDate);
+
+      const previousRows = await this.prisma.appointment.findMany({
+        where: {
+          businessId: params.businessId,
+          staffId: params.staffId,
+          startTime: {
+            gte: prevFrom,
+            lte: prevToInclusive,
+          },
+        },
+        include: {
+          payment: { select: { amount: true, status: true } },
+          service: { select: { name: true, price: true } },
+          customer: { select: { firstName: true, lastName: true, phone: true } },
+        },
+        orderBy: { startTime: 'asc' },
+      });
+
+      const prev = computeStaffEarningsForRange({
+        rows: previousRows.map((row) => ({
+          id: row.id,
+          startTime: row.startTime,
+          status: row.status,
+          confirmationStatus:
+            (row as unknown as { confirmationStatus?: string | null })
+              .confirmationStatus ?? null,
+          servicePrice: Number(row.service.price),
+          paymentStatus: row.payment?.status as PaymentStatus | null | undefined,
+          paymentAmount:
+            row.payment?.amount != null ? Number(row.payment.amount) : null,
+          customer: row.customer,
+          service: row.service,
+        })),
+        confirmationTrackingEnabled,
+        settlement,
+      });
+
+      previousPeriodComparison = {
+        fromDate: prevRange.fromDate,
+        toDate: prevRange.toDate,
+        completedAppointmentsCount: prev.completedAppointmentsCount,
+        totalRevenue: prev.totalRevenue,
+        grossEarnings: prev.grossEarnings,
+        finalPayable: prev.finalPayable,
+        revenueDeltaPercent: percentDelta(current.totalRevenue, prev.totalRevenue),
+        completedDeltaPercent: percentDelta(
+          current.completedAppointmentsCount,
+          prev.completedAppointmentsCount,
+        ),
+        payableDeltaPercent: percentDelta(
+          current.finalPayable,
+          prev.finalPayable,
+        ),
+      };
+    }
+
+    return {
+      staffId: params.staffId,
+      fromDate: params.fromDate.slice(0, 10),
+      toDate: params.toDate.slice(0, 10),
+      settlementModel: settlement.model,
+      completedAppointmentsCount: current.completedAppointmentsCount,
+      totalRevenue: current.totalRevenue,
+      grossEarnings: current.grossEarnings,
+      advancesTotal: current.advancesTotal,
+      alreadyPaidTotal: current.alreadyPaidTotal,
+      remainingToPay: current.remainingToPay,
+      finalPayable: current.finalPayable,
+      noShowCount: current.noShowCount,
+      cancelledCount: current.cancelledCount,
+      confirmedNoShowCount: current.confirmedNoShowCount,
+      confirmationTrackingEnabled,
+      previousPeriodComparison,
+      eligibleAppointments: current.eligibleAppointments,
+      settlementConfig: {
+        model: settlement.model,
+        boothRentalAmount: settlement.boothRentalAmount,
+        businessCutPercent: settlement.businessCutPercent,
+        fixedAmountPerTreatment: settlement.fixedAmountPerTreatment,
+        allowNegativeBalance: settlement.allowNegativeBalance,
+      },
+    };
+  }
+
+  private resolveStaffSettlementConfig(
+    raw: Partial<StaffSettlementConfig> | undefined,
+  ): StaffSettlementConfig {
+    const model =
+      raw?.model === 'boothRental' ||
+      raw?.model === 'fixedPerTreatment' ||
+      raw?.model === 'percentage'
+        ? raw.model
+        : 'percentage';
+
+    const toNonNegative = (value: unknown, fallback: number): number => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return fallback;
+      return Math.max(0, n);
+    };
+
+    return {
+      model,
+      boothRentalAmount: toNonNegative(raw?.boothRentalAmount, 0),
+      businessCutPercent: Math.min(
+        100,
+        toNonNegative(raw?.businessCutPercent, 20),
+      ),
+      fixedAmountPerTreatment: toNonNegative(raw?.fixedAmountPerTreatment, 0),
+      allowNegativeBalance: raw?.allowNegativeBalance === true,
+      advancesTotal: toNonNegative(raw?.advancesTotal, 0),
+      alreadyPaidTotal: toNonNegative(raw?.alreadyPaidTotal, 0),
+    };
   }
 
   async update(id: string, businessId: string, dto: UpdateStaffDto) {
