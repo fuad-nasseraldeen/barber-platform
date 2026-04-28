@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "@/hooks/use-translation";
 import { Settings2, Users, MessageSquare, Ban, User } from "lucide-react";
 import { ForwardArrow } from "@/components/ui/nav-arrow";
@@ -8,6 +9,7 @@ import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { LocaleSwitcher } from "@/components/ui/locale-switcher";
 import { useAuthStore } from "@/stores/auth-store";
 import { apiClient } from "@/lib/api-client";
+import { StaffAvatar } from "@/components/ui/staff-avatar";
 import { GoogleLoginButton } from "@/components/auth/GoogleLoginButton";
 import { useState } from "react";
 import toast from "react-hot-toast";
@@ -66,6 +68,20 @@ export default function AdminSettingsPage() {
   const [linkCode, setLinkCode] = useState("");
   const [linkPhoneStep, setLinkPhoneStep] = useState<"phone" | "code">("phone");
   const [linkPhoneLoading, setLinkPhoneLoading] = useState(false);
+  const { data: profileStaff } = useQuery<{
+    firstName?: string;
+    lastName?: string;
+    avatarUrl?: string | null;
+  }>({
+    queryKey: ["staff", "me"],
+    queryFn: () => apiClient("/staff/me"),
+    enabled: !!businessId && !!user?.staffId,
+  });
+  const managerDisplayName =
+    [profileStaff?.firstName, profileStaff?.lastName].filter(Boolean).join(" ").trim() ||
+    user?.name ||
+    user?.email ||
+    "—";
 
   return (
     <div className="space-y-8">
@@ -94,6 +110,19 @@ export default function AdminSettingsPage() {
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
               {t(descKey)}
             </p>
+            {href === "/admin/settings/profile" ? (
+              <div className="mt-3 flex items-center gap-3">
+                <StaffAvatar
+                  avatarUrl={profileStaff?.avatarUrl ?? null}
+                  firstName={profileStaff?.firstName ?? ""}
+                  lastName={profileStaff?.lastName ?? ""}
+                  size="sm"
+                />
+                <p className="truncate text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                  {managerDisplayName}
+                </p>
+              </div>
+            ) : null}
             <ForwardArrow className="mt-auto h-5 w-5 text-zinc-400 group-hover:text-[var(--primary)]" />
           </Link>
         ))}
@@ -105,8 +134,11 @@ export default function AdminSettingsPage() {
 
         <section className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
           <h3 className="mb-4 font-medium">{t("settings.theme")}</h3>
-          <p className="mb-4 text-sm text-zinc-500 dark:text-zinc-400">
+          <p className="mb-2 text-sm text-zinc-500 dark:text-zinc-400">
             {t("settings.themeDesc")}
+          </p>
+          <p className="mb-4 text-sm text-zinc-500 dark:text-zinc-400">
+            {t("settings.themeTopbarHint")}
           </p>
           <ThemeToggle />
         </section>
@@ -192,7 +224,6 @@ export default function AdminSettingsPage() {
                           try {
                             const res = await apiClient<{
                               accessToken: string;
-                              refreshToken: string;
                               user: { id: string; phone?: string; email?: string; name?: string; businessId?: string; role?: string; staffId?: string };
                             }>("/auth/link-phone", {
                               method: "POST",
@@ -213,8 +244,7 @@ export default function AdminSettingsPage() {
                                   "customer",
                                 staffId: res.user.staffId,
                               },
-                              res.accessToken,
-                              res.refreshToken
+                              res.accessToken
                             );
                             toast.success(t("settings.phoneLinked"));
                             setLinkPhone("");
@@ -269,7 +299,6 @@ export default function AdminSettingsPage() {
                     try {
                       const res = await apiClient<{
                         accessToken: string;
-                        refreshToken: string;
                         user: { id: string; phone?: string; email?: string; name?: string; businessId?: string; role?: string; staffId?: string };
                       }>("/auth/link-google", {
                         method: "POST",
@@ -290,8 +319,7 @@ export default function AdminSettingsPage() {
                             "customer",
                           staffId: res.user.staffId,
                         },
-                        res.accessToken,
-                        res.refreshToken
+                        res.accessToken
                       );
                       toast.success(t("settings.googleLinked"));
                     } catch (e) {

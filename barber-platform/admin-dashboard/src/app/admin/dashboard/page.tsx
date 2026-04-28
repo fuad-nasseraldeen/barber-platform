@@ -1,596 +1,606 @@
 "use client";
 
-import { useState } from "react";
-import Link from "next/link";
+import { useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { useQuery } from "@tanstack/react-query";
-import { InsightsPanel } from "@/components/ui/insights-panel";
-import { DashboardCard } from "@/components/ui/dashboard-card";
-import { DashboardCardSkeleton, ChartSkeleton, TableSkeleton } from "@/components/ui/skeleton";
-import { AppointmentsTrendChart } from "@/components/charts/appointments-trend-chart";
-import { CustomersGrowthChart } from "@/components/charts/customers-growth-chart";
-import { StaffPerformanceChart } from "@/components/charts/staff-performance-chart";
+import { Scissors, UserRoundPlus, Users } from "lucide-react";
 import { apiClient } from "@/lib/api-client";
 import { useAuthStore } from "@/stores/auth-store";
-import { useBranchStore } from "@/stores/branch-store";
+import { useEffectiveBranchId } from "@/hooks/use-effective-branch-id";
+import type {
+  ComparisonTone,
+  DashboardTemplateCard,
+  TeamGoalsMember,
+} from "@/lib/dashboard/kpi-template-config";
+import { isDashboardKpiTemplate } from "@/lib/dashboard/kpi-template-config";
 import { useLocaleStore } from "@/stores/locale-store";
 import { useTranslation } from "@/hooks/use-translation";
 import {
-  Calendar,
-  Users,
-  DollarSign,
-  UsersRound,
-  Gift,
-  Plus,
-  UserPlus,
-  Clock,
-} from "lucide-react";
-import { StaffAvatar } from "@/components/ui/staff-avatar";
+  DashboardKpiCardSkeleton,
+  TeamGoalsCardSkeleton,
+} from "@/components/ui/skeleton";
+import { BackgroundRefreshIndicator } from "@/components/ui/background-refresh-indicator";
 
-function formatDate(d: Date) {
-  return d.toISOString().slice(0, 10);
-}
-function formatTime(s: string) {
-  return s.slice(11, 16);
-}
+const KpiTemplateCard = dynamic(
+  () =>
+    import("@/components/dashboard/kpi-template-card").then(
+      (mod) => mod.KpiTemplateCard,
+    ),
+  {
+    loading: () => <DashboardKpiCardSkeleton />,
+  },
+);
 
-type AppointmentItem = {
+const TeamGoalsProgressCard = dynamic(
+  () =>
+    import("@/components/dashboard/team-goals-progress-card").then(
+      (mod) => mod.TeamGoalsProgressCard,
+    ),
+  {
+    loading: () => <TeamGoalsCardSkeleton />,
+  },
+);
+
+type AppointmentKpiItem = {
   id: string;
   startTime: string;
-  endTime: string;
-  status: string;
-  service: { name: string };
-  customer: { firstName: string | null; lastName: string | null };
-  staff?: { firstName: string; lastName: string };
+  customerId?: string;
+  customer?: { id?: string | null } | null;
 };
 
-type DashboardData = {
-  customerGrowth: { date: string; count: number }[];
-  appointmentsGraph: { date: string; count: number }[];
-  waitlistToday: { count: number };
-  todayMetrics?: {
-    appointmentsToday: number;
-    customersToday: number;
-    revenueToday: number;
-    waitlistSize: number;
-  };
-  visitMetrics?: {
-    returningCustomers: number;
-    avgVisitsPerCustomer: number;
-    customerRetentionRate: number;
-  };
-  staffPerformance: Array<{
-    staffId: string;
-    staffName: string;
-    totalBookings: number;
-    completedBookings: number;
-    revenue: number;
-    completionRate: number;
-  }>;
-  recentActivity: Array<{
-    id: string;
-    type: string;
-    staffName?: string;
-    customerName: string;
-    serviceName?: string;
-    startTime?: string;
-    createdAt: string;
-  }>;
-  todaysBirthdays?: Array<{ id: string; name: string; type: string }>;
+type WaitlistKpiItem = {
+  id: string;
+  createdAt: string;
 };
 
-function getGreeting(): string {
-  const h = new Date().getHours();
-  if (h < 12) return "greeting.morning";
-  if (h < 17) return "greeting.afternoon";
-  if (h < 21) return "greeting.evening";
-  return "greeting.night";
+type StaffScopeItem = {
+  id: string;
+  firstName: string;
+  lastName: string;
+};
+
+type BusinessGeneralSettings = {
+  settings?: {
+    generalSettings?: {
+      hideStatistics?: boolean;
+      hideEmployeeStatistics?: boolean;
+    };
+  };
+};
+
+function toYmd(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function monthRange(base = new Date()) {
+  const year = base.getUTCFullYear();
+  const month = base.getUTCMonth();
+  const prevMonthStart = new Date(Date.UTC(year, month - 1, 1));
+  const currentMonthStart = new Date(Date.UTC(year, month, 1));
+  const currentMonthEnd = new Date(Date.UTC(year, month + 1, 0));
+  return { prevMonthStart, currentMonthStart, currentMonthEnd };
+}
+
+function daysInUtcMonth(date: Date): number {
+  return new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+}
+
+function percentageText(current: number, previous: number, t: (key: string) => string): {
+  text?: string;
+  tone?: ComparisonTone;
+} {
+  if (previous <= 0) {
+    if (current <= 0) return { text: undefined, tone: "neutral" };
+    return { text: t("dashboard.newVsLastMonth"), tone: "positive" };
+  }
+  const delta = ((current - previous) / previous) * 100;
+  const sign = delta > 0 ? "+" : "";
+  return {
+    text: `${sign}${delta.toFixed(0)}% ${t("dashboard.vsLastMonth")}`,
+    tone: delta > 0 ? "positive" : delta < 0 ? "negative" : "neutral",
+  };
+}
+
+function buildDailySeries(
+  items: Date[],
+  rangeStart: Date,
+  rangeEnd: Date,
+) {
+  const dayCount =
+    Math.floor((rangeEnd.getTime() - rangeStart.getTime()) / (24 * 60 * 60 * 1000)) +
+    1;
+  const series = new Array(Math.max(0, dayCount)).fill(0);
+
+  for (const d of items) {
+    if (d < rangeStart || d > rangeEnd) continue;
+    const dayOffset = Math.floor(
+      (Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) -
+        Date.UTC(
+          rangeStart.getUTCFullYear(),
+          rangeStart.getUTCMonth(),
+          rangeStart.getUTCDate(),
+        )) /
+        (24 * 60 * 60 * 1000),
+    );
+    if (dayOffset >= 0 && dayOffset < series.length) {
+      series[dayOffset] += 1;
+    }
+  }
+
+  return series;
+}
+
+function buildUniqueCustomersSeriesByDay(
+  items: AppointmentKpiItem[],
+  rangeStart: Date,
+  rangeEnd: Date,
+) {
+  const dayCount =
+    Math.floor((rangeEnd.getTime() - rangeStart.getTime()) / (24 * 60 * 60 * 1000)) +
+    1;
+  const series = new Array(Math.max(0, dayCount)).fill(0);
+  const map = new Map<string, Set<string>>();
+
+  for (const item of items) {
+    const date = new Date(item.startTime);
+    if (date < rangeStart || date > rangeEnd) continue;
+    const customerId = String(item.customerId ?? item.customer?.id ?? "");
+    if (!customerId) continue;
+    const ymd = toYmd(new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())));
+    const bucket = map.get(ymd) ?? new Set<string>();
+    bucket.add(customerId);
+    map.set(ymd, bucket);
+  }
+
+  for (let i = 0; i < series.length; i++) {
+    const dayDate = new Date(
+      Date.UTC(
+        rangeStart.getUTCFullYear(),
+        rangeStart.getUTCMonth(),
+        rangeStart.getUTCDate() + i,
+      ),
+    );
+    series[i] = map.get(toYmd(dayDate))?.size ?? 0;
+  }
+
+  return series;
 }
 
 export default function AdminDashboardPage() {
   const t = useTranslation();
   const locale = useLocaleStore((s) => s.locale);
+  const dir = useLocaleStore((s) => s.dir);
   const user = useAuthStore((s) => s.user);
   const businessId = useAuthStore((s) => s.user?.businessId);
-  const branchId = useBranchStore((s) => s.selectedBranchId);
+  const userRole = useAuthStore((s) => s.user?.role);
+  const userStaffId = useAuthStore((s) => s.user?.staffId);
+  const canSelectStaffScope = userRole === "owner" || userRole === "manager";
+  const branchId = useEffectiveBranchId(businessId);
+  const now = new Date();
+  const { prevMonthStart, currentMonthStart, currentMonthEnd } = monthRange(now);
+  const currentDay = now.getUTCDate();
+  const [fromDay, setFromDay] = useState(1);
+  const [toDay, setToDay] = useState(currentDay);
+  const [selectedStaffScope, setSelectedStaffScope] = useState<string>("all");
+  const scopedStaffId =
+    userRole === "staff"
+      ? userStaffId
+      : canSelectStaffScope && selectedStaffScope !== "all"
+        ? selectedStaffScope
+        : undefined;
+  const isStaffScopedDashboard = !!scopedStaffId;
 
-  const { data, isLoading, isError, error } = useQuery<DashboardData>({
-    queryKey: ["dashboard", businessId, branchId ?? "all"],
+  const { data: staffScopeOptions, isFetching: staffScopeFetching } = useQuery<StaffScopeItem[]>({
+    queryKey: ["dashboard-staff-scope-options", businessId, branchId ?? "all"],
     queryFn: () =>
-      apiClient<DashboardData>(
-        `/analytics/dashboard?businessId=${businessId}${branchId ? `&branchId=${branchId}` : ""}`
+      apiClient<StaffScopeItem[]>(
+        `/staff?businessId=${businessId}${branchId ? `&branchId=${branchId}` : ""}&includeInactive=false`,
       ),
+    enabled: !!businessId && canSelectStaffScope,
+    staleTime: 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+  const { data: businessSettings } = useQuery<BusinessGeneralSettings>({
+    queryKey: ["business", businessId],
+    queryFn: () => apiClient<BusinessGeneralSettings>(`/business/by-id/${businessId}`),
     enabled: !!businessId,
-    staleTime: 2 * 60 * 1000,
+    staleTime: 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+  const hideStatistics =
+    businessSettings?.settings?.generalSettings?.hideStatistics === true;
+  const hideEmployeeStatistics =
+    businessSettings?.settings?.generalSettings?.hideEmployeeStatistics === true;
+
+  const safeFromDay = Math.min(fromDay, toDay);
+  const safeToDay = Math.max(fromDay, toDay);
+  const currentRangeStart = new Date(
+    Date.UTC(currentMonthStart.getUTCFullYear(), currentMonthStart.getUTCMonth(), safeFromDay, 0, 0, 0, 0),
+  );
+  const currentRangeEnd = new Date(
+    Date.UTC(currentMonthStart.getUTCFullYear(), currentMonthStart.getUTCMonth(), safeToDay, 23, 59, 59, 999),
+  );
+
+  const prevMonthDays = daysInUtcMonth(prevMonthStart);
+  const prevFromDay = Math.min(safeFromDay, prevMonthDays);
+  const prevToDay = Math.min(safeToDay, prevMonthDays);
+  const prevRangeStart = new Date(
+    Date.UTC(prevMonthStart.getUTCFullYear(), prevMonthStart.getUTCMonth(), prevFromDay, 0, 0, 0, 0),
+  );
+  const prevRangeEnd = new Date(
+    Date.UTC(prevMonthStart.getUTCFullYear(), prevMonthStart.getUTCMonth(), prevToDay, 23, 59, 59, 999),
+  );
+
+  const appointmentsRangeStart = toYmd(prevMonthStart);
+  const appointmentsRangeEnd = toYmd(now);
+
+  const {
+    data: appointments,
+    isLoading: appointmentsLoading,
+    isFetching: appointmentsFetching,
+  } = useQuery<
+    AppointmentKpiItem[]
+  >({
+    queryKey: [
+      "dashboard-kpi-appointments",
+      businessId,
+      branchId ?? "all",
+      scopedStaffId ?? "all-staff",
+      appointmentsRangeStart,
+      appointmentsRangeEnd,
+    ],
+    queryFn: async () => {
+      const response = await apiClient<{ appointments: AppointmentKpiItem[] }>(
+        `/appointments?businessId=${businessId}&startDate=${appointmentsRangeStart}&endDate=${appointmentsRangeEnd}&limit=1000${branchId ? `&branchId=${branchId}` : ""}${scopedStaffId ? `&staffId=${scopedStaffId}` : ""}`,
+      );
+      return response.appointments ?? [];
+    },
+    enabled: !!businessId,
+    staleTime: 60 * 1000,
     refetchOnWindowFocus: false,
   });
 
-  const { data: profileStaff } = useQuery<{
-    firstName?: string;
-    lastName?: string;
-    avatarUrl?: string | null;
-  }>({
-    queryKey: ["staff", "me"],
-    queryFn: () => apiClient("/staff/me"),
-    retry: false,
-    enabled: !!businessId && !!(user?.staffId || user?.businessId),
+  const {
+    data: waitlist,
+    isLoading: waitlistLoading,
+    isFetching: waitlistFetching,
+  } = useQuery<
+    WaitlistKpiItem[]
+  >({
+    queryKey: [
+      "dashboard-kpi-waitlist",
+      businessId,
+      branchId ?? "all",
+      isStaffScopedDashboard ? "staff-hidden" : "enabled",
+    ],
+    queryFn: async () => {
+      const response = await apiClient<WaitlistKpiItem[]>(
+        `/waitlist?businessId=${businessId}${branchId ? `&branchId=${branchId}` : ""}&limit=500`,
+      );
+      return response ?? [];
+    },
+    enabled: !!businessId && !isStaffScopedDashboard,
+    staleTime: 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
-  const { data: waitlistItems } = useQuery({
-    queryKey: ["waitlist", businessId, branchId ?? "all"],
-    queryFn: () =>
-      apiClient<Array<{ id: string; customer?: { firstName?: string; lastName?: string; email: string }; service?: { name: string }; createdAt: string }>>(
-        `/waitlist?businessId=${businessId}&status=ACTIVE${branchId ? `&branchId=${branchId}` : ""}&limit=10`
+  const cards = useMemo<DashboardTemplateCard[]>(() => {
+    const items = appointments ?? [];
+    const appointmentDates = items.map((a) => new Date(a.startTime));
+    const currentRangeItems = items.filter((a) => {
+      const d = new Date(a.startTime);
+      return d >= currentRangeStart && d <= currentRangeEnd;
+    });
+    const prevRangeItems = items.filter((a) => {
+      const d = new Date(a.startTime);
+      return d >= prevRangeStart && d <= prevRangeEnd;
+    });
+
+    const currentRangeAppointments = currentRangeItems.length;
+    const previousRangeAppointments = prevRangeItems.length;
+    const treatmentsComparison = percentageText(
+      currentRangeAppointments,
+      previousRangeAppointments,
+      t,
+    );
+
+    const currentRangeCustomersSet = new Set(
+      currentRangeItems
+        .map((a) => a.customerId ?? a.customer?.id ?? "")
+        .filter(Boolean),
+    );
+    const previousRangeCustomersSet = new Set(
+      prevRangeItems
+        .map((a) => a.customerId ?? a.customer?.id ?? "")
+        .filter(Boolean),
+    );
+    const customersComparison = percentageText(
+      currentRangeCustomersSet.size,
+      previousRangeCustomersSet.size,
+      t,
+    );
+
+    const waitlistItems = (waitlist ?? []).map((w) => new Date(w.createdAt));
+    const currentMonthWaitlist = waitlistItems.filter(
+      (d) => d >= currentMonthStart,
+    ).length;
+    const previousMonthWaitlist = waitlistItems.filter(
+      (d) => d >= prevMonthStart && d < currentMonthStart,
+    ).length;
+    const waitlistComparison = percentageText(
+      currentMonthWaitlist,
+      previousMonthWaitlist,
+      t,
+    );
+
+    const customerSeries = buildUniqueCustomersSeriesByDay(
+      currentRangeItems,
+      currentRangeStart,
+      currentRangeEnd,
+    );
+    const treatmentSeries = buildDailySeries(
+      appointmentDates.filter(
+        (d) => d >= currentRangeStart && d <= currentRangeEnd,
       ),
-    enabled: !!businessId,
-    staleTime: 1 * 60 * 1000,
-  });
+      currentRangeStart,
+      currentRangeEnd,
+    );
+    const waitlistSeries = buildDailySeries(
+      waitlistItems.filter((d) => d >= currentMonthStart),
+      currentMonthStart,
+      currentMonthEnd,
+    );
 
-  const todayStr = formatDate(new Date());
-  const { data: todayAppointmentsData } = useQuery<{ appointments: AppointmentItem[] }>({
-    queryKey: ["appointments", "today", businessId, branchId ?? "all"],
-    queryFn: () =>
-      apiClient(
-        `/appointments?businessId=${businessId}&startDate=${todayStr}&endDate=${todayStr}&limit=50${branchId ? `&branchId=${branchId}` : ""}`
-      ),
-    enabled: !!businessId,
-    staleTime: 1 * 60 * 1000,
-  });
-  const todayAppointments = todayAppointmentsData?.appointments ?? [];
-  const nextAppointment = todayAppointments
-    .filter((a) => a.status !== "COMPLETED" && a.status !== "CANCELLED")
-    .sort((a, b) => a.startTime.localeCompare(b.startTime))[0];
+    const ownerMember: TeamGoalsMember = {
+      id: String(user?.id ?? "owner"),
+      name: user?.name?.trim() || user?.email || t("role.owner"),
+      avatarUrl: null,
+      role: t("role.owner"),
+      progressPercent: 82,
+      rank: 1,
+      isOwner: true,
+    };
 
-  const [appointmentsFilter, setAppointmentsFilter] = useState<"day" | "week" | "month">("week");
-  const [customersFilter, setCustomersFilter] = useState<"day" | "week" | "month">("week");
+    const baseCards: DashboardTemplateCard[] = [];
+    if (!hideStatistics) {
+      baseCards.push(
+        {
+          id: "kpi-customers-month-to-date",
+          type: "customers",
+          title: t("dashboard.customersBookedInRange"),
+          value: currentRangeCustomersSet.size,
+          comparisonText: customersComparison.text,
+          comparisonTone: customersComparison.tone,
+          icon: Users,
+          chartSeries: customerSeries,
+          chartStartDate: toYmd(currentRangeStart),
+          visible: true,
+        },
+        {
+          id: "kpi-treatments-month-to-date",
+          type: "treatments",
+          title: t("dashboard.treatmentsInRange"),
+          value: currentRangeAppointments,
+          comparisonText: treatmentsComparison.text,
+          comparisonTone: treatmentsComparison.tone,
+          icon: Scissors,
+          chartSeries: treatmentSeries,
+          chartStartDate: toYmd(currentRangeStart),
+          visible: true,
+        },
+      );
+    }
+
+    if (isStaffScopedDashboard) {
+      return baseCards;
+    }
+
+    const allCards = [...baseCards];
+    if (!hideStatistics) {
+      allCards.push({
+        id: "kpi-waitlist-month-to-date",
+        type: "waitlist",
+        title: t("dashboard.waitlistThisMonth"),
+        value: currentMonthWaitlist,
+        comparisonText: waitlistComparison.text,
+        comparisonTone: waitlistComparison.tone,
+        icon: UserRoundPlus,
+        chartSeries: waitlistSeries,
+        chartStartDate: toYmd(currentMonthStart),
+        visible: true,
+      });
+    }
+    if (!hideEmployeeStatistics) {
+      allCards.push({
+        id: "team-goals-progress-monthly",
+        type: "teamGoalsProgress",
+        title: t("dashboard.teamGoalsProgress"),
+        subtitle: t("dashboard.monthlyTargetCompletion"),
+        ownerMember,
+        members: [
+          ownerMember,
+          {
+            id: "team-member-2",
+            name: "Ariel Cohen",
+            avatarUrl: null,
+            role: t("dashboard.teamRoleSeniorStylist"),
+            progressPercent: 74,
+            rank: 2,
+          },
+          {
+            id: "team-member-3",
+            name: "Noa Levi",
+            avatarUrl: null,
+            role: t("dashboard.teamRoleBarber"),
+            progressPercent: 67,
+            rank: 3,
+          },
+          {
+            id: "team-member-4",
+            name: "Daniel Peretz",
+            avatarUrl: null,
+            role: t("dashboard.teamRoleJuniorBarber"),
+            progressPercent: 53,
+            rank: 4,
+          },
+        ],
+        palette: {
+          accentColor: "var(--primary)",
+          accentSoft: "color-mix(in srgb, var(--primary) 18%, transparent)",
+          accentText: "var(--primary)",
+          trackColor: "color-mix(in srgb, var(--primary) 12%, #e4e4e7)",
+        },
+        visible: true,
+      });
+    }
+
+    return allCards;
+  }, [
+    appointments,
+    canSelectStaffScope,
+    currentMonthEnd,
+    currentMonthStart,
+    currentRangeEnd,
+    currentRangeStart,
+    scopedStaffId,
+    prevMonthStart,
+    prevRangeEnd,
+    prevRangeStart,
+    hideEmployeeStatistics,
+    hideStatistics,
+    selectedStaffScope,
+    t,
+    user,
+    waitlist,
+    isStaffScopedDashboard,
+  ]);
 
   if (!businessId) {
     return (
-      <div>
-        <h1 className="mb-6 text-2xl font-semibold">Dashboard</h1>
-        <p className="text-zinc-600 dark:text-zinc-400">
-          Please log in to view the dashboard.
+      <div className="px-4 py-6">
+        <h1 className="text-2xl font-semibold tracking-tight">
+          {t("nav.dashboard")}
+        </h1>
+        <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+          Please log in to view your performance dashboard.
         </p>
       </div>
     );
   }
 
-  const greetingBase = t(getGreeting());
-  const userName = profileStaff?.firstName
-    || (user?.name ? user.name.split(/\s+/)[0] : null)
-    || user?.email
-    || user?.phone;
-  const greeting = userName ? `${greetingBase}, ${userName}!` : `${greetingBase}!`;
-  const today = data?.todayMetrics;
-  const waitlistCount = today?.waitlistSize ?? data?.waitlistToday?.count ?? 0;
-
-  if (isError) {
-    return (
-      <div className="p-6">
-        <h1 className="mb-4 text-2xl font-semibold">Dashboard</h1>
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
-          <p className="font-medium">Unable to load dashboard</p>
-          <p className="mt-1 text-sm">{error instanceof Error ? error.message : "Please try again later."}</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (isLoading) {
-    return (
-      <div className="flex gap-0">
-        <div className="min-w-0 flex-1 space-y-8 p-6">
-          <div className="greeting-card h-24 animate-pulse rounded-2xl" />
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {[1, 2, 3, 4].map((i) => (
-              <DashboardCardSkeleton key={i} />
-            ))}
-          </div>
-          <div className="grid gap-6 lg:grid-cols-2">
-            <ChartSkeleton />
-            <ChartSkeleton />
-          </div>
-          <div className="grid gap-6 lg:grid-cols-3">
-            <ChartSkeleton />
-            <ChartSkeleton />
-            <TableSkeleton rows={3} />
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const visibleCards = cards.filter((card) => card.visible);
+  const isLoadingFirstLoad =
+    (appointments == null && appointmentsLoading) ||
+    (!isStaffScopedDashboard && waitlist == null && waitlistLoading);
+  const isBackgroundRefreshing =
+    !isLoadingFirstLoad &&
+    (appointmentsFetching || (!isStaffScopedDashboard && waitlistFetching) || staffScopeFetching);
+  const selectableDays = Array.from({ length: currentDay }, (_, i) => i + 1);
 
   return (
-    <div className="flex gap-0">
-      {/* Mobile layout - only on small screens */}
-      <div className="min-w-0 flex-1 space-y-3 md:hidden">
-        {/* Compact greeting */}
-        <div className="greeting-card rounded-xl p-4 shadow-sm">
-          <div className="flex items-center gap-3">
-            <StaffAvatar
-              avatarUrl={profileStaff?.avatarUrl ?? null}
-              firstName={profileStaff?.firstName ?? ""}
-              lastName={profileStaff?.lastName ?? ""}
-              size="md"
-              className="shrink-0"
-            />
-            <div className="min-w-0 flex-1">
-              <h1 className="truncate text-lg font-semibold">{greeting}</h1>
-              <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                {new Date().toLocaleDateString(locale, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
-              </p>
-            </div>
-          </div>
+    <main
+      dir={dir}
+      className="mx-auto w-full max-w-xl px-4 pt-4 pb-7 sm:px-5 sm:pt-5"
+    >
+      <header className="mb-4">
+        <p className="text-xs font-medium uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">
+          {t("dashboard.kpiOverview")}
+        </p>
+        <div className="mt-1 flex items-center justify-between gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
+            {t("dashboard.snapshot")}
+          </h1>
+          <BackgroundRefreshIndicator active={isBackgroundRefreshing} />
         </div>
+      </header>
 
-        {/* Next Appointment */}
-        <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-700 dark:bg-zinc-800">
-          <h2 className="mb-3 text-sm font-semibold">{t("mobile.nextAppointment")}</h2>
-          {nextAppointment ? (
-            <Link
-              href="/admin/appointments"
-              className="block rounded-lg border border-zinc-100 p-3 dark:border-zinc-700"
+      <section className="mb-4 rounded-2xl border border-zinc-200 bg-white/80 p-3 dark:border-zinc-800 dark:bg-zinc-900/70">
+        <p className="mb-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+          {t("dashboard.rangeLabel")}
+        </p>
+        <div className={`grid gap-2 ${canSelectStaffScope ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-2"}`}>
+          <label className="text-xs text-zinc-600 dark:text-zinc-400">
+            {t("dashboard.fromDay")}
+            <select
+              className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              value={fromDay}
+              onChange={(e) => setFromDay(Number(e.target.value))}
             >
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <p className="font-medium">
-                    {nextAppointment.customer.firstName} {nextAppointment.customer.lastName}
-                  </p>
-                  <p className="text-sm text-zinc-500">{nextAppointment.service.name}</p>
-                </div>
-                <div className="text-right">
-                  <p className="font-medium">{formatTime(nextAppointment.startTime)}</p>
-                  {nextAppointment.staff && (
-                    <p className="text-xs text-zinc-500">
-                      {nextAppointment.staff.firstName} {nextAppointment.staff.lastName}
-                    </p>
-                  )}
-                </div>
-              </div>
-            </Link>
-          ) : (
-            <p className="py-2 text-sm text-zinc-500">{t("mobile.noNextAppointment")}</p>
-          )}
-        </div>
-
-        {/* Today's Schedule timeline */}
-        <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-700 dark:bg-zinc-800">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">{t("mobile.todaysSchedule")}</h2>
-            <Link href="/admin/appointments" className="text-xs text-blue-600 dark:text-blue-400">
-              {t("employee.viewAll")}
-            </Link>
-          </div>
-          {todayAppointments.length === 0 ? (
-            <p className="py-2 text-sm text-zinc-500">{t("employee.noAppointmentsToday")}</p>
-          ) : (
-            <ul className="space-y-2">
-              {todayAppointments.slice(0, 5).map((apt) => (
-                <li
-                  key={apt.id}
-                  className="flex items-center gap-3 rounded-lg border border-zinc-100 p-2.5 dark:border-zinc-700"
-                >
-                  <span className="text-sm font-medium tabular-nums text-zinc-600 dark:text-zinc-400">
-                    {formatTime(apt.startTime)}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium">
-                      {apt.customer.firstName} {apt.customer.lastName}
-                    </p>
-                    <p className="truncate text-xs text-zinc-500">{apt.service.name}</p>
-                  </div>
-                  <span
-                    className={`shrink-0 rounded px-2 py-0.5 text-xs ${
-                      apt.status === "COMPLETED"
-                        ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300"
-                        : apt.status === "CONFIRMED" || apt.status === "IN_PROGRESS"
-                        ? "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300"
-                        : "bg-zinc-100 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-300"
-                    }`}
-                  >
-                    {apt.status === "COMPLETED"
-                      ? t("appointments.statusCompleted")
-                      : apt.status === "CONFIRMED" || apt.status === "IN_PROGRESS"
-                      ? t("appointments.statusConfirmed")
-                      : apt.status}
-                  </span>
-                </li>
+              {selectableDays.map((d) => (
+                <option key={`from-${d}`} value={d}>
+                  {d}
+                </option>
               ))}
-            </ul>
-          )}
-        </div>
+            </select>
+          </label>
 
-        {/* Compact stats row */}
-        <div className="grid grid-cols-4 gap-2">
-          <div className="rounded-lg border border-zinc-200 bg-white p-3 text-center dark:border-zinc-700 dark:bg-zinc-800">
-            <p className="text-lg font-bold">{today?.appointmentsToday ?? 0}</p>
-            <p className="text-xs text-zinc-500">{t("metrics.appointmentsToday")}</p>
-          </div>
-          <div className="rounded-lg border border-zinc-200 bg-white p-3 text-center dark:border-zinc-700 dark:bg-zinc-800">
-            <p className="text-lg font-bold">{today?.customersToday ?? 0}</p>
-            <p className="text-xs text-zinc-500">{t("metrics.customersToday")}</p>
-          </div>
-          <div className="rounded-lg border border-zinc-200 bg-white p-3 text-center dark:border-zinc-700 dark:bg-zinc-800">
-            <p className="text-lg font-bold">${(today?.revenueToday ?? 0).toFixed(0)}</p>
-            <p className="text-xs text-zinc-500">{t("metrics.revenueToday")}</p>
-          </div>
-          <div className="rounded-lg border border-zinc-200 bg-white p-3 text-center dark:border-zinc-700 dark:bg-zinc-800">
-            <p className="text-lg font-bold">{waitlistCount}</p>
-            <p className="text-xs text-zinc-500">{t("metrics.waitlistSize")}</p>
-          </div>
-        </div>
-
-        {/* Quick Actions */}
-        <div className="grid grid-cols-3 gap-2">
-          <Link
-            href="/admin/appointments"
-            className="flex flex-col items-center gap-1.5 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-700 dark:bg-zinc-800"
-          >
-            <Plus className="h-6 w-6 text-primary" />
-            <span className="text-xs font-medium">{t("mobile.newAppointment")}</span>
-          </Link>
-          <Link
-            href="/admin/customers"
-            className="flex flex-col items-center gap-1.5 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-700 dark:bg-zinc-800"
-          >
-            <UserPlus className="h-6 w-6 text-primary" />
-            <span className="text-xs font-medium">{t("mobile.addCustomer")}</span>
-          </Link>
-          <Link
-            href="/admin/appointments"
-            className="flex flex-col items-center gap-1.5 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-700 dark:bg-zinc-800"
-          >
-            <Clock className="h-6 w-6 text-primary" />
-            <span className="text-xs font-medium">{t("mobile.blockTime")}</span>
-          </Link>
-        </div>
-      </div>
-
-      {/* Desktop layout - unchanged */}
-      <div className="hidden min-w-0 flex-1 space-y-8 p-6 md:block">
-      {/* Greeting with gradient */}
-      <div className="greeting-card rounded-2xl p-6 shadow-md">
-        <div className="flex items-center gap-4">
-          <StaffAvatar
-            avatarUrl={profileStaff?.avatarUrl ?? null}
-            firstName={profileStaff?.firstName ?? ""}
-            lastName={profileStaff?.lastName ?? ""}
-            size="lg"
-            className="shrink-0"
-          />
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{greeting}</h1>
-            <p className="mt-1 text-zinc-600 dark:text-zinc-400">
-          {new Date().toLocaleDateString(locale, {
-            weekday: "long",
-            year: "numeric",
-            month: "long",
-            day: "numeric",
-          })}
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* Key metrics cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <DashboardCard
-          icon={<Calendar className="h-5 w-5" />}
-          title={t("metrics.appointmentsToday")}
-          value={today?.appointmentsToday ?? 0}
-          gradient
-        />
-        <DashboardCard
-          icon={<Users className="h-5 w-5" />}
-          title={t("metrics.customersToday")}
-          value={today?.customersToday ?? 0}
-        />
-        <DashboardCard
-          icon={<DollarSign className="h-5 w-5" />}
-          title={t("metrics.revenueToday")}
-          value={`$${(today?.revenueToday ?? 0).toFixed(2)}`}
-        />
-        <DashboardCard
-          icon={<UsersRound className="h-5 w-5" />}
-          title={t("metrics.waitlistSize")}
-          value={waitlistCount}
-        />
-      </div>
-
-      {/* Graphs row */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        <AppointmentsTrendChart
-          data={data?.appointmentsGraph ?? []}
-          timeFilter={appointmentsFilter}
-          onTimeFilterChange={setAppointmentsFilter}
-        />
-        <CustomersGrowthChart
-          data={data?.customerGrowth ?? []}
-          timeFilter={customersFilter}
-          onTimeFilterChange={setCustomersFilter}
-        />
-      </div>
-
-      {/* Staff performance chart + Activity feed + Birthdays */}
-      <div className="grid gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <StaffPerformanceChart data={data?.staffPerformance ?? []} />
-        </div>
-
-        {/* Right column: Activity + Birthdays */}
-        <div className="flex flex-col gap-6">
-          <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-md transition-all duration-300 ease-in-out hover:scale-[1.01] hover:shadow-lg dark:border-zinc-700/80 dark:bg-zinc-900/50">
-            <h2 className="mb-4 font-semibold">{t("widget.recentActivity")}</h2>
-            {data?.recentActivity?.length ? (
-              <ul className="max-h-64 space-y-3 overflow-y-auto">
-                {data.recentActivity.slice(0, 10).map((a) => (
-                  <li key={a.id} className="flex items-start gap-3 text-sm">
-                    <span
-                      className={`mt-1.5 inline-block h-2 w-2 shrink-0 rounded-full ${
-                        a.type === "booking"
-                          ? "bg-emerald-500"
-                          : a.type === "cancellation"
-                          ? "bg-amber-500"
-                          : a.type === "no_show"
-                          ? "bg-red-500"
-                          : "bg-blue-500"
-                      }`}
-                    />
-                    <div>
-                      {a.type === "customer_registered" ? (
-                        <span>
-                          {t("activity.customerRegistered")}: {a.customerName}
-                        </span>
-                      ) : (
-                        <span>
-                          {a.staffName} · {a.customerName}
-                          {a.serviceName && ` · ${a.serviceName}`}
-                        </span>
-                      )}
-                      <p className="text-xs text-zinc-500">
-                        {new Date(a.createdAt).toLocaleString(locale)}
-                      </p>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="py-8 text-center text-sm text-zinc-500">
-                {t("widget.noData")}
-              </p>
-            )}
-          </div>
-
-          <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-md transition-all duration-300 ease-in-out hover:scale-[1.01] hover:shadow-lg dark:border-zinc-700/80 dark:bg-zinc-900/50">
-            <div className="mb-4 flex items-center gap-2">
-              <Gift className="h-5 w-5 text-zinc-500" />
-              <h2 className="font-semibold">{t("widget.todaysBirthdays")}</h2>
-            </div>
-            {data?.todaysBirthdays?.length ? (
-              <ul className="space-y-2">
-                {data.todaysBirthdays.map((b) => (
-                  <li key={b.id} className="flex items-center justify-between gap-2 text-sm">
-                    <span className="rounded-full bg-rose-100 px-2 py-0.5 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300">
-                      {b.name}
-                    </span>
-                    <a
-                      href={`/admin/customers/${b.id}`}
-                      className="text-xs text-blue-600 hover:underline dark:text-blue-400"
-                    >
-                      View
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="py-4 text-center text-sm text-zinc-500">
-                No birthdays today
-              </p>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Visit metrics + Waitlist table */}
-      <div className="grid gap-6 lg:grid-cols-3">
-        {data?.visitMetrics && (
-          <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-md transition-all duration-300 ease-in-out hover:shadow-lg dark:border-zinc-700/80 dark:bg-zinc-900/50">
-            <h2 className="mb-4 font-semibold">Visit metrics</h2>
-            <div className="space-y-3">
-              <div className="flex justify-between">
-                <span className="text-zinc-600 dark:text-zinc-400">
-                  {t("widget.returningCustomers")}
-                </span>
-                <span className="font-medium">
-                  {data.visitMetrics.returningCustomers ?? 0}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-zinc-600 dark:text-zinc-400">
-                  {t("widget.avgVisitsPerCustomer")}
-                </span>
-                <span className="font-medium">
-                  {(data.visitMetrics.avgVisitsPerCustomer ?? 0).toFixed(1)}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-zinc-600 dark:text-zinc-400">
-                  {t("widget.customerRetentionRate")}
-                </span>
-                <span className="font-medium">
-                  {data.visitMetrics.customerRetentionRate ?? 0}%
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Waitlist today table */}
-        <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-md transition-all duration-300 ease-in-out hover:shadow-lg dark:border-zinc-700/80 dark:bg-zinc-900/50 lg:col-span-2">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="font-semibold">{t("widget.waitlistToday")}</h2>
-            <a
-              href="/admin/waitlist"
-              className="text-sm text-blue-600 hover:underline dark:text-blue-400"
+          <label className="text-xs text-zinc-600 dark:text-zinc-400">
+            {t("dashboard.toDay")}
+            <select
+              className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              value={toDay}
+              onChange={(e) => setToDay(Number(e.target.value))}
             >
-              View all
-            </a>
-          </div>
-          {waitlistItems && waitlistItems.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-zinc-200 dark:border-zinc-700">
-                    <th className="pb-2 text-left font-medium">Customer</th>
-                    <th className="pb-2 text-left font-medium">Service</th>
-                    <th className="pb-2 text-left font-medium">Added</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {waitlistItems.slice(0, 5).map((w) => (
-                    <tr key={w.id} className="border-b border-zinc-100 transition-colors duration-200 hover:bg-zinc-50 dark:border-zinc-700/50 dark:hover:bg-zinc-800/50">
-                      <td className="py-2">
-                        {[w.customer?.firstName, w.customer?.lastName].filter(Boolean).join(" ") || w.customer?.email || "—"}
-                      </td>
-                      <td className="py-2 text-zinc-600 dark:text-zinc-400">
-                        {w.service?.name ?? "—"}
-                      </td>
-                      <td className="py-2 text-zinc-500">
-                        {new Date(w.createdAt).toLocaleDateString(locale)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="py-4 text-center text-sm text-zinc-500">
-              {waitlistCount} active {waitlistCount === 1 ? "entry" : "entries"}.{" "}
-              <a href="/admin/waitlist" className="text-blue-600 hover:underline dark:text-blue-400">
-                View waitlist
-              </a>
-            </p>
-          )}
+              {selectableDays.map((d) => (
+                <option key={`to-${d}`} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {canSelectStaffScope ? (
+            <label className="text-xs text-zinc-600 dark:text-zinc-400">
+              {t("dashboard.staffScopeLabel")}
+              <select
+                className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                value={selectedStaffScope}
+                onChange={(e) => setSelectedStaffScope(e.target.value)}
+              >
+                <option value="all">{t("dashboard.staffScopeAll")}</option>
+                {(staffScopeOptions ?? []).map((staff) => (
+                  <option key={staff.id} value={staff.id}>
+                    {staff.firstName} {staff.lastName}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
         </div>
-      </div>
-      </div>
-      <div className="hidden md:block">
-      <InsightsPanel defaultOpen={false}>
-        <div className="space-y-4 text-sm">
-          <p className="text-zinc-600 dark:text-zinc-400">
-            Quick insights and tips appear here.
-          </p>
-          {data?.visitMetrics && (
-            <div className="rounded-lg bg-zinc-50 p-3 dark:bg-zinc-800/50">
-              <p className="font-medium">Retention</p>
-              <p className="text-zinc-600 dark:text-zinc-400">
-                {data.visitMetrics.customerRetentionRate ?? 0}% of customers return
-              </p>
-            </div>
-          )}
-        </div>
-      </InsightsPanel>
-      </div>
-    </div>
+      </section>
+
+      <section className="space-y-4">
+        {isLoadingFirstLoad
+          ? [1, 2, 3, 4].map((item) =>
+              item === 4 && !isStaffScopedDashboard ? (
+                <TeamGoalsCardSkeleton key={item} />
+              ) : (
+                <DashboardKpiCardSkeleton key={item} />
+              ),
+            )
+          : visibleCards.map((card) =>
+              isDashboardKpiTemplate(card) ? (
+                <KpiTemplateCard
+                  key={card.id}
+                  card={card}
+                  locale={locale}
+                  isRtl={dir === "rtl"}
+                  monthlyLabel={t("dashboard.monthlyKpi")}
+                  noBaselineLabel={t("dashboard.noPreviousBaseline")}
+                />
+              ) : (
+                <TeamGoalsProgressCard
+                  key={card.id}
+                  card={card}
+                  isRtl={dir === "rtl"}
+                  ownerLabel={t("role.owner")}
+                  teamMemberLabel={t("dashboard.teamMember")}
+                />
+              ),
+            )}
+      </section>
+    </main>
   );
 }
-

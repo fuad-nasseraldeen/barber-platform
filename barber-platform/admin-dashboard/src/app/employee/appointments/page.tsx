@@ -5,13 +5,16 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api-client";
 import { useAuthStore } from "@/stores/auth-store";
 import { useEmployeeStaffId } from "@/hooks/use-employee-staff-id";
-import { useBranchStore } from "@/stores/branch-store";
+import { useEffectiveBranchId } from "@/hooks/use-effective-branch-id";
 import { useLocaleStore } from "@/stores/locale-store";
 import { useTranslation } from "@/hooks/use-translation";
 import toast from "react-hot-toast";
 import { Check, UserX } from "lucide-react";
 import { DayScheduleView } from "@/components/appointments/day-schedule-view";
 import { AppointmentPopup } from "@/components/appointments/appointment-popup";
+import { useResolvedScheduleTimeZone } from "@/hooks/use-resolved-schedule-timezone";
+import { businessLocalYmdFromIso, formatHhMmInZone } from "@/lib/calendar-business-time";
+import { customerIdToRowClass } from "@/lib/customer-tag-colors";
 
 type Appointment = {
   id: string;
@@ -23,26 +26,6 @@ type Appointment = {
   customer: { id?: string; firstName: string | null; lastName: string | null; phone: string | null };
   branch?: { name: string } | null;
 };
-
-const CUSTOMER_COLORS = [
-  "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100",
-  "bg-sky-100 text-sky-900 dark:bg-sky-900/40 dark:text-sky-100",
-  "bg-rose-100 text-rose-900 dark:bg-rose-900/40 dark:text-rose-100",
-  "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-100",
-  "bg-violet-100 text-violet-900 dark:bg-violet-900/40 dark:text-violet-100",
-  "bg-cyan-100 text-cyan-900 dark:bg-cyan-900/40 dark:text-cyan-100",
-  "bg-orange-100 text-orange-900 dark:bg-orange-900/40 dark:text-orange-100",
-  "bg-pink-100 text-pink-900 dark:bg-pink-900/40 dark:text-pink-100",
-];
-
-function customerColor(customerId: string | undefined): string {
-  if (!customerId) return CUSTOMER_COLORS[0];
-  let h = 0;
-  for (let i = 0; i < customerId.length; i++) {
-    h = ((h << 5) - h + customerId.charCodeAt(i)) | 0;
-  }
-  return CUSTOMER_COLORS[Math.abs(h) % CUSTOMER_COLORS.length];
-}
 
 type AppointmentsResponse = { appointments: Appointment[]; total: number };
 
@@ -71,9 +54,10 @@ const STATUS_COLORS: Record<string, string> = {
 export default function EmployeeAppointmentsPage() {
   const t = useTranslation();
   const locale = useLocaleStore((s) => s.locale);
+  const businessTimeZone = useResolvedScheduleTimeZone(undefined);
   const businessId = useAuthStore((s) => s.user?.businessId);
   const staffId = useEmployeeStaffId();
-  const selectedBranchId = useBranchStore((s) => s.selectedBranchId);
+  const selectedBranchId = useEffectiveBranchId(businessId);
   const queryClient = useQueryClient();
 
   const [viewMode, setViewMode] = useState<"schedule" | "list">("schedule");
@@ -97,7 +81,7 @@ export default function EmployeeAppointmentsPage() {
     endDate: scheduleDateRange.end,
     limit: "100",
   });
-  if (selectedBranchId) scheduleParams.set("branchId", selectedBranchId);
+  /** Schedule must reflect all commitments for this staff (slotKey has no branch). */
   if (statusFilter) scheduleParams.set("status", statusFilter);
 
   const listParams = new URLSearchParams({
@@ -111,7 +95,7 @@ export default function EmployeeAppointmentsPage() {
   if (statusFilter) listParams.set("status", statusFilter);
 
   const { data: scheduleData, isLoading: scheduleLoading } = useQuery<AppointmentsResponse>({
-    queryKey: ["appointments", businessId, staffId, scheduleDateRange.start, scheduleDateRange.end, selectedBranchId, statusFilter],
+    queryKey: ["appointments", "schedule", businessId, staffId, scheduleDateRange.start, scheduleDateRange.end, statusFilter],
     queryFn: () => apiClient(`/appointments?${scheduleParams}`),
     enabled: !!businessId && !!staffId && viewMode === "schedule",
   });
@@ -254,6 +238,7 @@ export default function EmployeeAppointmentsPage() {
           <>
             <DayScheduleView
               date={currentDate}
+              businessTimezone={businessTimeZone}
               appointments={scheduleAppointments.map((a) => ({
                 ...a,
                 staff: a.staff ? { id: a.staff.id ?? "", firstName: a.staff.firstName, lastName: a.staff.lastName } : undefined,
@@ -263,7 +248,9 @@ export default function EmployeeAppointmentsPage() {
               vacations={[]}
               breaks={scheduleBreaks}
               staffColor={() => ""}
-              getAppointmentColor={(apt) => customerColor((apt.customer as { id?: string })?.id)}
+              getAppointmentColor={(apt) =>
+                customerIdToRowClass((apt.customer as { id?: string })?.id)
+              }
               staffAvatarMap={staffAvatarMap}
               onAppointmentClick={(apt) => setSelectedAppointment(apt as Appointment)}
               customerName={customerName}
@@ -275,6 +262,7 @@ export default function EmployeeAppointmentsPage() {
             {selectedAppointment && (
             <AppointmentPopup
               appointment={selectedAppointment}
+              businessTimeZone={businessTimeZone}
               onClose={() => setSelectedAppointment(null)}
               onDelete={() => {
                 if (window.confirm(t("appointments.popupDelete") + "?")) {
@@ -341,7 +329,9 @@ export default function EmployeeAppointmentsPage() {
                     </p>
                     <p className="text-sm text-zinc-500">{apt.service.name}</p>
                     <p className="text-sm text-zinc-500">
-                      {formatDate(new Date(apt.startTime))} {apt.startTime.slice(11, 16)} - {apt.endTime.slice(11, 16)}
+                      {businessLocalYmdFromIso(apt.startTime, businessTimeZone)}{" "}
+                      {formatHhMmInZone(apt.startTime, businessTimeZone)} –{" "}
+                      {formatHhMmInZone(apt.endTime, businessTimeZone)}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">

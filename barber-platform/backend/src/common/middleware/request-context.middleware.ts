@@ -11,6 +11,7 @@ export class RequestContextMiddleware implements NestMiddleware {
     const user = req.user as { id?: string; sub?: string; businessId?: string } | undefined;
     const context = {
       requestId,
+      requestStartMs: Date.now(),
       tenantId: user?.businessId ?? req.body?.businessId ?? req.query?.businessId,
       userId: user?.id ?? user?.sub,
     };

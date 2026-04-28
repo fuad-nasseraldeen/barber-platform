@@ -1,0 +1,12 @@
+[phases.setup]
+# Keep Node version aligned with backend requirements (Node 18+)
+nixPkgs = ["nodejs_20"]
+
+[phases.install]
+cmds = ["npm ci --prefix backend"]
+
+[phases.build]
+cmds = ["npm run --prefix backend build"]
+
+[start]
+cmd = "npm run --prefix backend start:prod"

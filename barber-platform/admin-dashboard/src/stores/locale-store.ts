@@ -18,8 +18,8 @@ const localeToDir: Record<Locale, "ltr" | "rtl"> = {
 export const useLocaleStore = create<LocaleState>()(
   persist(
     (set) => ({
-      locale: "en",
-      dir: "ltr",
+      locale: "he",
+      dir: "rtl",
       setLocale: (locale) =>
         set({ locale, dir: localeToDir[locale] }),
     }),

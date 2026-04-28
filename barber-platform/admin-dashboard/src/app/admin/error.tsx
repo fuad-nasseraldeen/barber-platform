@@ -2,6 +2,12 @@
 
 import { useEffect } from "react";
 
+function isChunkLoadError(error: Error): boolean {
+  if (error.name === "ChunkLoadError") return true;
+  const msg = error.message ?? "";
+  return /Loading chunk .* failed/i.test(msg) || /missing:.*\/_next\/static\/chunks\//i.test(msg);
+}
+
 export default function AdminError({
   error,
   reset,
@@ -11,6 +17,18 @@ export default function AdminError({
 }) {
   useEffect(() => {
     console.error("Admin route error:", error);
+
+    if (typeof window === "undefined" || !isChunkLoadError(error)) return;
+
+    // After HMR / rebuild, the browser may still request an old chunk URL once.
+    const key = `admin_chunk_reload:${window.location.pathname}`;
+    try {
+      if (sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, "1");
+      window.location.reload();
+    } catch {
+      /* private mode etc. */
+    }
   }, [error]);
 
   return (

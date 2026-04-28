@@ -9,6 +9,8 @@ import { useTranslation } from "@/hooks/use-translation";
 import { Calendar, Clock, DollarSign, Plus, UserCheck } from "lucide-react";
 import Link from "next/link";
 import { StaffAvatar } from "@/components/ui/staff-avatar";
+import { DashboardPanelSkeleton, DashboardKpiCardSkeleton } from "@/components/ui/skeleton";
+import { BackgroundRefreshIndicator } from "@/components/ui/background-refresh-indicator";
 
 type Appointment = {
   id: string;
@@ -50,7 +52,11 @@ export default function EmployeeDashboardPage() {
 
   const greetingBase = t(getGreeting());
 
-  const { data: todayData } = useQuery<AppointmentsResponse>({
+  const {
+    data: todayData,
+    isLoading: todayLoading,
+    isFetching: todayFetching,
+  } = useQuery<AppointmentsResponse>({
     queryKey: ["appointments", businessId, staffId, today],
     queryFn: () =>
       apiClient(
@@ -64,7 +70,11 @@ export default function EmployeeDashboardPage() {
   const endWeek = new Date();
   endWeek.setDate(endWeek.getDate() + 7);
 
-  const { data: staffProfile } = useQuery<{ firstName?: string; lastName?: string; avatarUrl?: string | null }>({
+  const {
+    data: staffProfile,
+    isLoading: profileLoading,
+    isFetching: profileFetching,
+  } = useQuery<{ firstName?: string; lastName?: string; avatarUrl?: string | null }>({
     queryKey: ["staff", "me"],
     queryFn: () => apiClient("/staff/me"),
     enabled: user?.role === "staff",
@@ -76,7 +86,11 @@ export default function EmployeeDashboardPage() {
     || user?.phone;
   const greeting = displayName ? `${greetingBase}, ${displayName}!` : `${greetingBase}!`;
 
-  const { data: upcomingData } = useQuery<AppointmentsResponse>({
+  const {
+    data: upcomingData,
+    isLoading: upcomingLoading,
+    isFetching: upcomingFetching,
+  } = useQuery<AppointmentsResponse>({
     queryKey: ["appointments", businessId, staffId, "upcoming"],
     queryFn: () =>
       apiClient(
@@ -88,6 +102,12 @@ export default function EmployeeDashboardPage() {
   const todayAppointments = todayData?.appointments ?? [];
   const upcomingAppointments = upcomingData?.appointments ?? [];
   const completedToday = todayAppointments.filter((a) => a.status === "COMPLETED").length;
+  const firstLoad =
+    (todayData == null && todayLoading) ||
+    (upcomingData == null && upcomingLoading) ||
+    (staffProfile == null && profileLoading);
+  const backgroundRefreshing =
+    !firstLoad && (todayFetching || upcomingFetching || profileFetching);
   const nextAppointment = todayAppointments
     .filter((a) => a.status !== "COMPLETED" && a.status !== "CANCELLED")
     .sort((a, b) => a.startTime.localeCompare(b.startTime))[0];
@@ -238,7 +258,10 @@ export default function EmployeeDashboardPage() {
             className="shrink-0"
           />
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{greeting}</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-semibold tracking-tight">{greeting}</h1>
+              <BackgroundRefreshIndicator active={backgroundRefreshing} />
+            </div>
             <p className="mt-1 text-zinc-600 dark:text-zinc-400">
           {new Date().toLocaleDateString(locale, {
             weekday: "long",
@@ -252,6 +275,14 @@ export default function EmployeeDashboardPage() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
+        {firstLoad ? (
+          <>
+            <DashboardKpiCardSkeleton />
+            <DashboardKpiCardSkeleton />
+            <DashboardKpiCardSkeleton />
+          </>
+        ) : (
+          <>
         <div className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
           <div className="flex items-center gap-3">
             <div className="rounded-lg bg-blue-100 p-2 dark:bg-blue-900/30">
@@ -285,10 +316,19 @@ export default function EmployeeDashboardPage() {
             </div>
           </div>
         </div>
+          </>
+        )}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <div className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
+        {firstLoad ? (
+          <>
+            <DashboardPanelSkeleton rows={5} />
+            <DashboardPanelSkeleton rows={5} />
+          </>
+        ) : (
+          <>
+        <div className="min-h-[420px] rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
           <h2 className="mb-4 text-lg font-semibold">{t("employee.todayAppointments")}</h2>
           {todayAppointments.length === 0 ? (
             <p className="text-zinc-500 dark:text-zinc-400">{t("employee.noAppointmentsToday")}</p>
@@ -335,7 +375,7 @@ export default function EmployeeDashboardPage() {
           </Link>
         </div>
 
-        <div className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
+        <div className="min-h-[420px] rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
           <h2 className="mb-4 text-lg font-semibold">{t("employee.upcoming")}</h2>
           {upcomingAppointments.length === 0 ? (
             <p className="text-zinc-500 dark:text-zinc-400">{t("employee.noUpcoming")}</p>
@@ -366,6 +406,8 @@ export default function EmployeeDashboardPage() {
             {t("employee.viewAll")} →
           </Link>
         </div>
+          </>
+        )}
       </div>
       </div>
     </div>

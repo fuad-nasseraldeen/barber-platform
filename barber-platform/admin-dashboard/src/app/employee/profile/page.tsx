@@ -32,7 +32,6 @@ export default function EmployeeProfilePage() {
   const user = useAuthStore((s) => s.user);
   const setAuth = useAuthStore((s) => s.setAuth);
   const accessToken = useAuthStore((s) => s.accessToken);
-  const refreshToken = useAuthStore((s) => s.refreshToken);
   const businessId = useAuthStore((s) => s.user?.businessId);
   const profilePhotoRef = useRef<HTMLInputElement>(null);
 
@@ -66,8 +65,8 @@ export default function EmployeeProfilePage() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ["staff", "me"] });
       const newName = `${variables.firstName} ${variables.lastName}`.trim();
-      if (newName && user && accessToken && refreshToken) {
-        setAuth({ ...user, name: newName }, accessToken, refreshToken);
+      if (newName && user && accessToken) {
+        setAuth({ ...user, name: newName }, accessToken);
       }
       toast.success(t("widget.saved"));
     },
@@ -325,7 +324,6 @@ export default function EmployeeProfilePage() {
                           try {
                             const res = await apiClient<{
                               accessToken: string;
-                              refreshToken: string;
                               user: { id: string; phone?: string; email?: string; name?: string; businessId?: string; role?: string; staffId?: string };
                             }>("/auth/link-phone", {
                               method: "POST",
@@ -346,8 +344,7 @@ export default function EmployeeProfilePage() {
                                   "customer",
                                 staffId: res.user.staffId,
                               },
-                              res.accessToken,
-                              res.refreshToken
+                              res.accessToken
                             );
                             toast.success(t("settings.phoneLinked"));
                             setLinkPhone("");
@@ -399,7 +396,6 @@ export default function EmployeeProfilePage() {
                     try {
                       const res = await apiClient<{
                         accessToken: string;
-                        refreshToken: string;
                         user: { id: string; phone?: string; email?: string; name?: string; businessId?: string; role?: string; staffId?: string };
                       }>("/auth/link-google", {
                         method: "POST",
@@ -420,8 +416,7 @@ export default function EmployeeProfilePage() {
                             "customer",
                           staffId: res.user.staffId,
                         },
-                        res.accessToken,
-                        res.refreshToken
+                        res.accessToken
                       );
                       toast.success(t("settings.googleLinked"));
                     } catch (e) {

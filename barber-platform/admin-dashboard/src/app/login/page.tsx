@@ -9,6 +9,18 @@ import { useTranslation } from "@/hooks/use-translation";
 import { GoogleLoginButton } from "@/components/auth/GoogleLoginButton";
 import { loadGoogleGsi } from "@/lib/gsi-loader";
 
+function isApiConnectionError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("failed to fetch") ||
+    m.includes("networkerror") ||
+    m.includes("network error") ||
+    m.includes("load failed") ||
+    m.includes("econnrefused") ||
+    m.includes("fetch failed")
+  );
+}
+
 function getRedirectPath(redirectTo: "admin" | "staff" | "register-shop" | "register-staff"): string {
   switch (redirectTo) {
     case "admin":
@@ -54,7 +66,8 @@ export default function LoginPage() {
       });
       setStep("code");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to send code");
+      const msg = err instanceof Error ? err.message : "Failed to send code";
+      setError(isApiConnectionError(msg) ? t("auth.apiUnreachable") : msg);
     } finally {
       setLoading(false);
     }
@@ -67,7 +80,6 @@ export default function LoginPage() {
     try {
       const res = await apiClient<{
         accessToken: string;
-        refreshToken: string;
         user: { id: string; businessId?: string; name?: string; email?: string; phone?: string; role?: string; staffId?: string };
         redirectTo: "admin" | "staff" | "register-shop" | "register-staff";
       }>("/auth/verify-otp", {
@@ -84,13 +96,17 @@ export default function LoginPage() {
           role: (res.user.role as "owner" | "manager" | "staff" | "customer") ?? "customer",
           staffId: res.user.staffId,
         },
-        res.accessToken,
-        res.refreshToken
+        res.accessToken
       );
-      router.push(getRedirectPath(res.redirectTo));
+      // Defer navigation so zustand + persist apply before /register/staff auth guard runs
+      queueMicrotask(() => router.push(getRedirectPath(res.redirectTo)));
     } catch (err) {
       const msg = err instanceof Error ? err.message : "";
-      setError(msg === "Invalid OTP" ? t("auth.invalidOtp") : msg || t("auth.invalidOtp"));
+      if (isApiConnectionError(msg)) {
+        setError(t("auth.apiUnreachable"));
+      } else {
+        setError(msg === "Invalid OTP" ? t("auth.invalidOtp") : msg || t("auth.invalidOtp"));
+      }
     } finally {
       setLoading(false);
     }
@@ -102,7 +118,6 @@ export default function LoginPage() {
     try {
       const res = await apiClient<{
         accessToken: string;
-        refreshToken: string;
         user: { id: string; businessId?: string; name?: string; email?: string; phone?: string; role?: string; staffId?: string };
         redirectTo: "admin" | "staff" | "register-shop" | "register-staff";
       }>(API_PATHS.AUTH_GOOGLE, {
@@ -119,14 +134,15 @@ export default function LoginPage() {
           role: (res.user.role as "owner" | "manager" | "staff" | "customer") ?? "customer",
           staffId: res.user.staffId,
         },
-        res.accessToken,
-        res.refreshToken
+        res.accessToken
       );
-      router.push(getRedirectPath(res.redirectTo));
+      queueMicrotask(() => router.push(getRedirectPath(res.redirectTo)));
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Google login failed";
       if (msg === "Missing credential") {
         setError("Google sign-in was cancelled");
+      } else if (isApiConnectionError(msg)) {
+        setError(t("auth.apiUnreachable"));
       } else if (/internal server error|500|server error/i.test(msg)) {
         setError(t("auth.googleLoginServerError"));
       } else {
@@ -199,7 +215,7 @@ export default function LoginPage() {
 
         {/* SMS Login */}
         {step === "phone" ? (
-          <form onSubmit={handleRequestOtp} className="space-y-4">
+          <form onSubmit={handleRequestOtp} className="space-y-4" suppressHydrationWarning>
             <div>
               <label
                 htmlFor="phone"
@@ -222,12 +238,13 @@ export default function LoginPage() {
               type="submit"
               disabled={loading}
               className="btn-primary w-full rounded-lg py-2 font-medium"
+              suppressHydrationWarning
             >
               {loading ? t("widget.loading") : t("auth.sendCode")}
             </button>
           </form>
         ) : (
-          <form onSubmit={handleVerifyOtp} className="space-y-4">
+          <form onSubmit={handleVerifyOtp} className="space-y-4" suppressHydrationWarning>
             <div>
               <label
                 htmlFor="code"
@@ -251,6 +268,7 @@ export default function LoginPage() {
               type="submit"
               disabled={loading}
               className="btn-primary w-full rounded-lg py-2 font-medium"
+              suppressHydrationWarning
             >
               {loading ? t("widget.loading") : t("auth.verify")}
             </button>
@@ -258,6 +276,7 @@ export default function LoginPage() {
               type="button"
               onClick={() => setStep("phone")}
               className="w-full text-sm text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-400"
+              suppressHydrationWarning
             >
               {t("auth.changePhone")}
             </button>

@@ -9,17 +9,18 @@ import toast from "react-hot-toast";
 
 const GS_KEYS = [
   { key: "sendArrivalConfirmationSms", labelKey: "settings.gs.sendArrivalConfirmationSms", implemented: true },
+  { key: "requireCustomerArrivalConfirmation", labelKey: "settings.gs.requireCustomerArrivalConfirmation", implemented: true },
   { key: "allowCustomerRegistration", labelKey: "settings.gs.allowCustomerRegistration", implemented: false },
   { key: "sabbathMode", labelKey: "settings.gs.sabbathMode", implemented: false },
-  { key: "showCustomerPhoneToEmployees", labelKey: "settings.gs.showCustomerPhoneToEmployees", implemented: false },
-  { key: "enableQuickBookingPage", labelKey: "settings.gs.enableQuickBookingPage", implemented: false },
-  { key: "enableChat", labelKey: "settings.gs.enableChat", implemented: false },
-  { key: "enableWaitlistNotifications", labelKey: "settings.gs.enableWaitlistNotifications", implemented: false },
-  { key: "hideOldUpdates", labelKey: "settings.gs.hideOldUpdates", implemented: false },
-  { key: "allowVacationInAppointmentPage", labelKey: "settings.gs.allowVacationInAppointmentPage", implemented: false },
-  { key: "hideStatistics", labelKey: "settings.gs.hideStatistics", implemented: false },
-  { key: "hidePopupAlerts", labelKey: "settings.gs.hidePopupAlerts", implemented: false },
-  { key: "hideEmployeeStatistics", labelKey: "settings.gs.hideEmployeeStatistics", implemented: false },
+  { key: "showCustomerPhoneToEmployees", labelKey: "settings.gs.showCustomerPhoneToEmployees", implemented: true },
+  { key: "enableQuickBookingPage", labelKey: "settings.gs.enableQuickBookingPage", implemented: true },
+  { key: "enableChat", labelKey: "settings.gs.enableChat", implemented: true },
+  { key: "enableWaitlistNotifications", labelKey: "settings.gs.enableWaitlistNotifications", implemented: true },
+  { key: "hideOldUpdates", labelKey: "settings.gs.hideOldUpdates", implemented: true },
+  { key: "allowVacationInAppointmentPage", labelKey: "settings.gs.allowVacationInAppointmentPage", implemented: true },
+  { key: "hideStatistics", labelKey: "settings.gs.hideStatistics", implemented: true },
+  { key: "hidePopupAlerts", labelKey: "settings.gs.hidePopupAlerts", implemented: true },
+  { key: "hideEmployeeStatistics", labelKey: "settings.gs.hideEmployeeStatistics", implemented: true },
   { key: "disableScrollOnAppointmentPage", labelKey: "settings.gs.disableScrollOnAppointmentPage", implemented: false },
 ] as const;
 

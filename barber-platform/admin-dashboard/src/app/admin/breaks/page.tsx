@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient, ensureValidToken } from "@/lib/api-client";
 import { useAuthStore } from "@/stores/auth-store";
@@ -8,6 +8,9 @@ import { useTranslation } from "@/hooks/use-translation";
 import toast from "react-hot-toast";
 import { Plus, Trash2 } from "lucide-react";
 import { StaffSelector } from "@/components/appointments/staff-selector";
+import { formatYmdLocal, addDaysLocal } from "@/lib/local-ymd";
+import { useLocaleStore } from "@/stores/locale-store";
+import { formatLongWeekdayDateYmd, formatWeekdayLongDayOfWeek } from "@/lib/locale-display";
 
 type BreakException = {
   id: string;
@@ -35,14 +38,9 @@ type StaffMember = {
   avatarUrl: string | null;
 };
 
-const DAY_NAMES_HE = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
-
-function formatDate(d: Date) {
-  return d.toISOString().slice(0, 10);
-}
-
 export default function AdminBreaksPage() {
   const t = useTranslation();
+  const locale = useLocaleStore((s) => s.locale);
   const queryClient = useQueryClient();
   const businessId = useAuthStore((s) => s.user?.businessId);
 
@@ -51,26 +49,27 @@ export default function AdminBreaksPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [weeklyModalOpen, setWeeklyModalOpen] = useState(false);
   const [form, setForm] = useState({
-    date: formatDate(new Date()),
+    date: formatYmdLocal(new Date()),
     startTime: "12:00",
     endTime: "13:00",
     recurrence: "ONCE" as "ONCE" | "DAILY" | "WEEKLY",
-    endDate: formatDate(new Date()),
+    endDate: formatYmdLocal(new Date()),
   });
   const [weeklyForm, setWeeklyForm] = useState({
     daysOfWeek: [] as number[],
     startTime: "12:00",
     endTime: "13:00",
     durationType: "permanent" as "permanent" | "untilDate",
-    endDate: formatDate(new Date()),
+    endDate: formatYmdLocal(new Date()),
   });
+  const [selectedExceptionIds, setSelectedExceptionIds] = useState<string[]>([]);
 
-  const rangeStart = formatDate(currentDate);
-  const rangeEnd = (() => {
-    const d = new Date(currentDate);
-    d.setDate(d.getDate() + 13);
-    return formatDate(d);
-  })();
+  const rangeStart = formatYmdLocal(currentDate);
+  const rangeEnd = addDaysLocal(rangeStart, 179);
+
+  useEffect(() => {
+    setSelectedExceptionIds([]);
+  }, [rangeStart, rangeEnd, selectedStaffId]);
 
   const { data: staffList = [], isLoading: staffLoading } = useQuery<StaffMember[]>({
     queryKey: ["staff", businessId, "breaks"],
@@ -128,8 +127,11 @@ export default function AdminBreaksPage() {
         }
       }
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["staff"] });
+      for (const id of variables.staffIds) {
+        queryClient.invalidateQueries({ queryKey: ["staff", id, "breaks"] });
+      }
       setModalOpen(false);
       toast.success(t("breaks.added"));
     },
@@ -145,6 +147,26 @@ export default function AdminBreaksPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["staff", selectedStaffId, "breaks"] });
       toast.success(t("breaks.deleted"));
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : t("employee.failed")),
+  });
+
+  const bulkDeleteExceptionsMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      if (!businessId || !selectedStaffId) return;
+      await Promise.all(
+        ids.map((id) =>
+          apiClient(
+            `/staff/breaks/exception/${id}?staffId=${selectedStaffId}&businessId=${businessId}`,
+            { method: "DELETE" }
+          )
+        )
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["staff", selectedStaffId, "breaks"] });
+      setSelectedExceptionIds([]);
+      toast.success(t("breaks.bulkDeleted"));
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : t("employee.failed")),
   });
@@ -190,8 +212,11 @@ export default function AdminBreaksPage() {
         });
       }
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["staff"] });
+      for (const id of variables.staffIds) {
+        queryClient.invalidateQueries({ queryKey: ["staff", id, "breaks"] });
+      }
       setWeeklyModalOpen(false);
       toast.success(t("breaks.added"));
     },
@@ -275,7 +300,7 @@ export default function AdminBreaksPage() {
                     startTime: "12:00",
                     endTime: "13:00",
                     durationType: "permanent",
-                    endDate: formatDate(new Date()),
+                    endDate: formatYmdLocal(new Date()),
                   });
                   setWeeklyModalOpen(true);
                 }}
@@ -288,11 +313,11 @@ export default function AdminBreaksPage() {
                 type="button"
                 onClick={() => {
                   setForm({
-                    date: formatDate(currentDate),
+                    date: formatYmdLocal(currentDate),
                     startTime: "12:00",
                     endTime: "13:00",
                     recurrence: "ONCE",
-                    endDate: formatDate(currentDate),
+                    endDate: formatYmdLocal(currentDate),
                   });
                   setModalOpen(true);
                 }}
@@ -319,11 +344,11 @@ export default function AdminBreaksPage() {
                 type="button"
                 onClick={() => {
                   setForm({
-                    date: formatDate(currentDate),
+                    date: formatYmdLocal(currentDate),
                     startTime: "12:00",
                     endTime: "13:00",
                     recurrence: "ONCE",
-                    endDate: formatDate(currentDate),
+                    endDate: formatYmdLocal(currentDate),
                   });
                   setModalOpen(true);
                 }}
@@ -340,7 +365,7 @@ export default function AdminBreaksPage() {
                     startTime: "12:00",
                     endTime: "13:00",
                     durationType: "permanent",
-                    endDate: formatDate(new Date()),
+                    endDate: formatYmdLocal(new Date()),
                   });
                   setWeeklyModalOpen(true);
                 }}
@@ -358,8 +383,13 @@ export default function AdminBreaksPage() {
               </label>
               <input
                 type="date"
-                value={formatDate(currentDate)}
-                onChange={(e) => setCurrentDate(new Date(e.target.value))}
+                value={formatYmdLocal(currentDate)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (!v) return;
+                  const [y, m, d] = v.split("-").map(Number);
+                  setCurrentDate(new Date(y, m - 1, d));
+                }}
                 className="rounded-lg border border-zinc-300 px-3 py-2 dark:border-zinc-600 dark:bg-zinc-800"
               />
             </div>
@@ -376,7 +406,7 @@ export default function AdminBreaksPage() {
                       className="flex items-center justify-between rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-800"
                     >
                       <span>
-                        {DAY_NAMES_HE[wb.dayOfWeek]} · {wb.startTime} – {wb.endTime}
+                        {formatWeekdayLongDayOfWeek(wb.dayOfWeek, locale)} · {wb.startTime} – {wb.endTime}
                       </span>
                       <button
                         type="button"
@@ -398,43 +428,102 @@ export default function AdminBreaksPage() {
                   {t("breaks.empty")}
                 </p>
               ) : (
-                <div className="space-y-2">
-                  {Array.from(exceptionsByDate.entries())
-                    .sort(([a], [b]) => a.localeCompare(b))
-                    .map(([date, exs]) => (
-                      <div
-                        key={date}
-                        className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-800"
-                      >
-                        <p className="mb-2 font-medium text-zinc-700 dark:text-zinc-300">
-                          {new Date(date + "T12:00").toLocaleDateString("he-IL", {
-                            weekday: "long",
-                            day: "numeric",
-                            month: "long",
-                          })}
-                        </p>
-                        <div className="space-y-2">
-                          {exs.map((ex) => (
-                            <div
-                              key={ex.id}
-                              className="flex items-center justify-between rounded-lg bg-zinc-50 px-3 py-2 dark:bg-zinc-900"
-                            >
-                              <span className="tabular-nums">
-                                {ex.startTime} – {ex.endTime}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => deleteExceptionMutation.mutate(ex.id)}
-                                className="rounded p-1 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
+                <>
+                  <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+                    <span className="text-zinc-600 dark:text-zinc-400">
+                      {t("breaks.selectedCount").replace("{count}", String(selectedExceptionIds.length))}
+                    </span>
+                    <button
+                      type="button"
+                      className="text-violet-600 hover:underline dark:text-violet-400"
+                      onClick={() => setSelectedExceptionIds(exceptions.map((x) => x.id))}
+                    >
+                      {t("breaks.selectAllInList")}
+                    </button>
+                    <button
+                      type="button"
+                      className="text-zinc-600 hover:underline dark:text-zinc-400"
+                      onClick={() => setSelectedExceptionIds([])}
+                    >
+                      {t("breaks.clearSelection")}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={selectedExceptionIds.length === 0 || bulkDeleteExceptionsMutation.isPending}
+                      className="text-red-600 hover:underline disabled:opacity-40"
+                      onClick={() => {
+                        const n = selectedExceptionIds.length;
+                        if (n > 0 && confirm(t("breaks.confirmBulkDelete").replace("{count}", String(n)))) {
+                          bulkDeleteExceptionsMutation.mutate([...selectedExceptionIds]);
+                        }
+                      }}
+                    >
+                      {t("breaks.deleteSelected")}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={exceptions.length === 0 || bulkDeleteExceptionsMutation.isPending}
+                      className="text-red-600 hover:underline disabled:opacity-40"
+                      onClick={() => {
+                        if (
+                          exceptions.length > 0 &&
+                          confirm(t("breaks.confirmDeleteAllInList").replace("{count}", String(exceptions.length)))
+                        ) {
+                          bulkDeleteExceptionsMutation.mutate(exceptions.map((x) => x.id));
+                        }
+                      }}
+                    >
+                      {t("breaks.deleteAllInList")}
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    {Array.from(exceptionsByDate.entries())
+                      .sort(([a], [b]) => a.localeCompare(b))
+                      .map(([date, exs]) => (
+                        <div
+                          key={date}
+                          className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-800"
+                        >
+                          <p className="mb-2 font-medium text-zinc-700 dark:text-zinc-300">
+                            {formatLongWeekdayDateYmd(date, locale)}
+                          </p>
+                          <div className="space-y-2">
+                            {exs.map((ex) => (
+                              <div
+                                key={ex.id}
+                                className="flex items-center justify-between gap-2 rounded-lg bg-zinc-50 px-3 py-2 dark:bg-zinc-900"
                               >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                            </div>
-                          ))}
+                                <span className="flex min-w-0 items-center gap-2">
+                                  <input
+                                    type="checkbox"
+                                    className="rounded border-zinc-300"
+                                    checked={selectedExceptionIds.includes(ex.id)}
+                                    onChange={(e) => {
+                                      if (e.target.checked) {
+                                        setSelectedExceptionIds((p) => (p.includes(ex.id) ? p : [...p, ex.id]));
+                                      } else {
+                                        setSelectedExceptionIds((p) => p.filter((id) => id !== ex.id));
+                                      }
+                                    }}
+                                  />
+                                  <span className="tabular-nums">
+                                    {ex.startTime} – {ex.endTime}
+                                  </span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => deleteExceptionMutation.mutate(ex.id)}
+                                  className="shrink-0 rounded p-1 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                </div>
+                      ))}
+                  </div>
+                </>
               )}
             </div>
           </div>
@@ -477,7 +566,7 @@ export default function AdminBreaksPage() {
                   startTime: weeklyForm.startTime,
                   endTime: weeklyForm.endTime,
                   durationType: weeklyForm.durationType,
-                  startDate: formatDate(currentDate),
+                  startDate: formatYmdLocal(currentDate),
                   endDate: weeklyForm.durationType === "untilDate" ? weeklyForm.endDate : undefined,
                 });
               }}
@@ -501,7 +590,7 @@ export default function AdminBreaksPage() {
                     />
                     <span>{t("breaks.allDays")}</span>
                   </label>
-                  {DAY_NAMES_HE.map((name, i) => (
+                  {[0, 1, 2, 3, 4, 5, 6].map((i) => (
                     <label
                       key={i}
                       className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-zinc-300 px-3 py-2 dark:border-zinc-600"
@@ -524,7 +613,7 @@ export default function AdminBreaksPage() {
                         }}
                         className="rounded"
                       />
-                      <span>{name}</span>
+                      <span>{formatWeekdayLongDayOfWeek(i, locale)}</span>
                     </label>
                   ))}
                 </div>

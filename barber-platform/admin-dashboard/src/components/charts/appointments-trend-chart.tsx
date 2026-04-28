@@ -66,7 +66,7 @@ export function AppointmentsTrendChart({
         )}
       </div>
       {sliced.length ? (
-        <div className="h-48">
+        <div className="h-48 min-h-[192px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={sliced}>
               <defs>

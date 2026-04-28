@@ -2,6 +2,7 @@ import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/commo
 import { Prisma, PrismaClient } from '@prisma/client';
 import { connectPrismaWithRetry } from '../common/prisma-connect-retry';
 import {
+  addAppointmentCreateTraceQuery,
   addPrismaMiddlewareQueryRecord,
   addPrismaQueryEventRecord,
   addPrismaQueryDuration,
@@ -64,6 +65,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         const dt = Date.now() - t0;
         addPrismaQueryDuration(dt);
         addPrismaMiddlewareQueryRecord(params.model, params.action, dt);
+        addAppointmentCreateTraceQuery(params.model, params.action, dt);
         if (dt > 100 && getRequestEndpoint() === 'availability') {
           const queryType = params.model
             ? `${params.model}.${params.action}`

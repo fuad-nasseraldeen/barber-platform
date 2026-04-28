@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api-client";
 import { useAuthStore } from "@/stores/auth-store";
@@ -10,6 +10,26 @@ import { LoadingButton } from "@/components/ui/loading-button";
 import toast from "react-hot-toast";
 
 type TabId = "app-entry" | "push" | "new-customer";
+
+type PushTemplate = {
+  id: string;
+  title: string;
+  message: string;
+  url?: string;
+  sendSms?: boolean;
+};
+
+type PushMessageHistory = {
+  id: string;
+  title: string;
+  message: string;
+  url?: string;
+  sendSms: boolean;
+  sendAt: string;
+  target: "all" | "selected";
+  customerIds: string[];
+  createdAt: string;
+};
 
 interface BusinessSettings {
   appEntryMessage?: {
@@ -25,8 +45,16 @@ interface BusinessSettings {
     healthDeclarationLink?: string;
     sendSms: boolean;
   };
-  notificationTemplates?: Array<{ id: string; title: string; message: string; url?: string }>;
+  notificationTemplates?: PushTemplate[];
+  pushMessagesHistory?: PushMessageHistory[];
 }
+
+type CustomerOption = {
+  id: string;
+  firstName: string | null;
+  lastName: string | null;
+  phone: string | null;
+};
 
 function getAppEntryContent(settings: BusinessSettings["appEntryMessage"]) {
   const defaults = { title: "ברוכים הבאים ל־{{appName}}", message: "" };
@@ -44,6 +72,7 @@ export default function AdminNotificationsPage() {
   const queryClient = useQueryClient();
   const businessId = useAuthStore((s) => s.user?.businessId);
   const [activeTab, setActiveTab] = useState<TabId>("app-entry");
+  const [customerSearch, setCustomerSearch] = useState("");
 
   const { data: business } = useQuery({
     queryKey: ["business", businessId],
@@ -85,12 +114,9 @@ export default function AdminNotificationsPage() {
     onError: (e: Error) => toast.error(e.message || "Failed to save"),
   });
 
-  const { data: staffList = [] } = useQuery({
-    queryKey: ["staff", businessId],
-    queryFn: () =>
-      apiClient<{ id: string; firstName: string; lastName: string }[]>(
-        `/staff?businessId=${businessId}&excludeManagers=true`
-      ),
+  const { data: customers = [] } = useQuery<CustomerOption[]>({
+    queryKey: ["customers", businessId, "notifications-push"],
+    queryFn: () => apiClient<CustomerOption[]>(`/customers?businessId=${businessId}`),
     enabled: !!businessId && activeTab === "push",
   });
 
@@ -98,11 +124,32 @@ export default function AdminNotificationsPage() {
     title: "",
     message: "",
     url: "",
-    target: "all" as "all" | "staff",
-    staffId: "",
+    target: "all" as "all" | "selected",
+    customerIds: [] as string[],
     sendSms: false,
     saveAsTemplate: false,
+    sendAt: "",
   });
+
+  const visibleCustomers = useMemo(() => {
+    const term = customerSearch.trim().toLowerCase();
+    if (!term) return customers;
+    return customers.filter((c) => {
+      const name = `${c.firstName ?? ""} ${c.lastName ?? ""}`.trim().toLowerCase();
+      const phone = (c.phone ?? "").toLowerCase();
+      return name.includes(term) || phone.includes(term);
+    });
+  }, [customers, customerSearch]);
+
+  const toggleCustomer = (id: string) => {
+    setPushForm((p) => {
+      const has = p.customerIds.includes(id);
+      return {
+        ...p,
+        customerIds: has ? p.customerIds.filter((x) => x !== id) : [...p.customerIds, id],
+      };
+    });
+  };
 
   const handleAppEntrySave = (data?: { title?: string; message?: string; visible?: boolean }) => {
     const payload = data ?? {};
@@ -137,21 +184,60 @@ export default function AdminNotificationsPage() {
       toast.error("Title and message are required");
       return;
     }
-    toast.success("Push notification sent");
-    if (pushForm.saveAsTemplate) {
-      const templates = settings.notificationTemplates ?? [];
-      updateSettingsMutation.mutate({
-        notificationTemplates: [
-          ...templates,
-          {
-            id: crypto.randomUUID(),
-            title: pushForm.title,
-            message: pushForm.message,
-            url: pushForm.url || undefined,
-          },
-        ],
-      });
+    if (pushForm.target === "selected" && pushForm.customerIds.length === 0) {
+      toast.error("בחר לפחות לקוח אחד");
+      return;
     }
+
+    const history = settings.pushMessagesHistory ?? [];
+    const templates = settings.notificationTemplates ?? [];
+    const sendAt = pushForm.sendAt
+      ? new Date(pushForm.sendAt).toISOString()
+      : new Date().toISOString();
+    const item: PushMessageHistory = {
+      id: crypto.randomUUID(),
+      title: pushForm.title,
+      message: pushForm.message,
+      url: pushForm.url || undefined,
+      sendSms: pushForm.sendSms,
+      sendAt,
+      target: pushForm.target,
+      customerIds: pushForm.target === "all" ? [] : pushForm.customerIds,
+      createdAt: new Date().toISOString(),
+    };
+
+    updateSettingsMutation.mutate(
+      {
+        pushMessagesHistory: [item, ...history].slice(0, 100),
+        ...(pushForm.saveAsTemplate
+          ? {
+              notificationTemplates: [
+                ...templates,
+                {
+                  id: crypto.randomUUID(),
+                  title: pushForm.title,
+                  message: pushForm.message,
+                  url: pushForm.url || undefined,
+                  sendSms: pushForm.sendSms,
+                },
+              ],
+            }
+          : {}),
+      },
+      {
+        onSuccess: () => {
+          toast.success("ההתראה נשמרה ונכנסה לתזמון");
+          setPushForm((p) => ({
+            ...p,
+            title: "",
+            message: "",
+            url: "",
+            customerIds: [],
+            sendAt: "",
+          }));
+        },
+      },
+    );
   };
 
   const insertAppNamePlaceholder = () => {
@@ -188,12 +274,13 @@ export default function AdminNotificationsPage() {
     { id: "new-customer" as const, label: t("notifications.tabNewCustomer"), icon: UserPlus },
   ];
 
+  const pushTemplates = settings.notificationTemplates ?? [];
+  const pushHistory = settings.pushMessagesHistory ?? [];
+
   return (
     <div>
       <h1 className="mb-6 text-2xl font-semibold">{t("notifications.title")}</h1>
-      <p className="mb-8 text-zinc-600 dark:text-zinc-400">
-        {t("notifications.subtitle")}
-      </p>
+      <p className="mb-8 text-zinc-600 dark:text-zinc-400">{t("notifications.subtitle")}</p>
 
       <div className="mb-6 flex gap-2 border-b border-zinc-200 dark:border-zinc-700">
         {tabs.map(({ id, label, icon: Icon }) => (
@@ -216,9 +303,7 @@ export default function AdminNotificationsPage() {
       {activeTab === "app-entry" && (
         <div className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
           <h2 className="mb-4 font-medium">{t("notifications.appEntryTitle")}</h2>
-          <p className="mb-4 text-sm text-zinc-500 dark:text-zinc-400">
-            {t("notifications.appEntryDesc")}
-          </p>
+          <p className="mb-4 text-sm text-zinc-500 dark:text-zinc-400">{t("notifications.appEntryDesc")}</p>
           <div className="space-y-4">
             <div>
               <label className="mb-1 block text-sm font-medium">{t("notifications.titleLabel")}</label>
@@ -245,15 +330,13 @@ export default function AdminNotificationsPage() {
               <p className="mb-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">
                 {t("settings.arrivalPlaceholdersTitle")}
               </p>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={insertAppNamePlaceholder}
-                  className="rounded-full border border-[var(--primary)]/40 bg-[var(--primary)]/10 px-3 py-1.5 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary)]/20 dark:border-[var(--primary)]/50 dark:bg-[var(--primary)]/15 dark:hover:bg-[var(--primary)]/25"
-                >
-                  {t("notifications.phAppName")}
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={insertAppNamePlaceholder}
+                className="rounded-full border border-[var(--primary)]/40 bg-[var(--primary)]/10 px-3 py-1.5 text-sm font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary)]/20 dark:border-[var(--primary)]/50 dark:bg-[var(--primary)]/15 dark:hover:bg-[var(--primary)]/25"
+              >
+                {t("notifications.phAppName")}
+              </button>
             </div>
             <label className="flex cursor-pointer items-center gap-3">
               <input
@@ -280,9 +363,7 @@ export default function AdminNotificationsPage() {
       {activeTab === "push" && (
         <div className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
           <h2 className="mb-4 font-medium">{t("notifications.pushTitle")}</h2>
-          <p className="mb-4 text-sm text-zinc-500 dark:text-zinc-400">
-            {t("notifications.pushDesc")}
-          </p>
+          <p className="mb-4 text-sm text-zinc-500 dark:text-zinc-400">{t("notifications.pushDesc")}</p>
           <form onSubmit={handleSendPush} className="space-y-4">
             <div>
               <label className="mb-1 block text-sm font-medium">{t("notifications.titleLabel")}</label>
@@ -313,35 +394,69 @@ export default function AdminNotificationsPage() {
               />
             </div>
             <div>
-              <label className="mb-1 block text-sm font-medium">{t("notifications.sendTo")}</label>
+              <label className="mb-1 block text-sm font-medium">שלח אל</label>
               <select
                 value={pushForm.target}
                 onChange={(e) =>
                   setPushForm((p) => ({
                     ...p,
-                    target: e.target.value as "all" | "staff",
+                    target: e.target.value as "all" | "selected",
                   }))
                 }
                 className="w-full rounded-lg border border-zinc-300 px-4 py-2 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
               >
-                <option value="all">{t("notifications.allCustomers")}</option>
-                <option value="staff">{t("notifications.customersOfStaff")}</option>
+                <option value="all">כל הלקוחות</option>
+                <option value="selected">לקוח/לקוחות ספציפיים</option>
               </select>
-              {pushForm.target === "staff" && (
-                <select
-                  value={pushForm.staffId}
-                  onChange={(e) => setPushForm((p) => ({ ...p, staffId: e.target.value }))}
-                  className="mt-2 w-full rounded-lg border border-zinc-300 px-4 py-2 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
-                >
-                  <option value="">{t("notifications.selectEmployee")}</option>
-                  {staffList.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.firstName} {s.lastName}
-                    </option>
-                  ))}
-                </select>
-              )}
             </div>
+
+            {pushForm.target === "selected" && (
+              <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-700">
+                <input
+                  type="search"
+                  value={customerSearch}
+                  onChange={(e) => setCustomerSearch(e.target.value)}
+                  placeholder="חפש לקוח לפי שם או טלפון"
+                  className="mb-2 w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-600 dark:bg-zinc-900"
+                />
+                <div className="max-h-48 space-y-1 overflow-y-auto">
+                  {visibleCustomers.map((customer) => {
+                    const name = `${customer.firstName ?? ""} ${customer.lastName ?? ""}`.trim() || customer.phone || "—";
+                    const checked = pushForm.customerIds.includes(customer.id);
+                    return (
+                      <label
+                        key={customer.id}
+                        className="flex cursor-pointer items-center justify-between rounded-md px-2 py-1 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
+                      >
+                        <span className="text-sm">{name}</span>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleCustomer(customer.id)}
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                  נבחרו {pushForm.customerIds.length} לקוחות
+                </p>
+              </div>
+            )}
+
+            <div>
+              <label className="mb-1 block text-sm font-medium">מתי לשלוח</label>
+              <input
+                type="datetime-local"
+                value={pushForm.sendAt}
+                onChange={(e) => setPushForm((p) => ({ ...p, sendAt: e.target.value }))}
+                className="w-full rounded-lg border border-zinc-300 px-4 py-2 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+              />
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                אם ריק, ההודעה תישמר לשליחה מיידית.
+              </p>
+            </div>
+
             <label className="flex cursor-pointer items-center gap-3">
               <input
                 type="checkbox"
@@ -356,39 +471,55 @@ export default function AdminNotificationsPage() {
                 checked={pushForm.saveAsTemplate}
                 onChange={(e) => setPushForm((p) => ({ ...p, saveAsTemplate: e.target.checked }))}
               />
-              <span className="text-sm">{t("notifications.saveAsTemplate")}</span>
+              <span className="text-sm">שמור כתבנית לשימוש חוזר</span>
             </label>
             <button type="submit" className="btn-primary rounded-lg px-4 py-2 text-sm font-medium">
               {t("notifications.sendNotification")}
             </button>
           </form>
-          {(settings.notificationTemplates ?? []).length > 0 && (
+
+          {pushTemplates.length > 0 && (
             <div className="mt-8">
               <h3 className="mb-2 font-medium">{t("notifications.savedTemplates")}</h3>
               <div className="space-y-2">
-                {settings.notificationTemplates!.map((tmpl) => (
-                  <div
+                {pushTemplates.map((tmpl) => (
+                  <button
+                    type="button"
                     key={tmpl.id}
-                    className="flex items-center justify-between rounded-lg border border-zinc-200 p-3 dark:border-zinc-600"
+                    onClick={() =>
+                      setPushForm((p) => ({
+                        ...p,
+                        title: tmpl.title,
+                        message: tmpl.message,
+                        url: tmpl.url ?? "",
+                        sendSms: !!tmpl.sendSms,
+                      }))
+                    }
+                    className="w-full rounded-lg border border-zinc-200 p-3 text-start hover:bg-zinc-50 dark:border-zinc-600 dark:hover:bg-zinc-700/40"
                   >
-                    <div>
-                      <p className="font-medium">{tmpl.title}</p>
-                      <p className="text-sm text-zinc-500 line-clamp-1">{tmpl.message}</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setPushForm((p) => ({
-                          ...p,
-                          title: tmpl.title,
-                          message: tmpl.message,
-                          url: tmpl.url ?? "",
-                        }))
-                      }
-                      className="text-sm text-[var(--primary)] hover:underline"
-                    >
-                      {t("notifications.useTemplate")}
-                    </button>
+                    <p className="font-medium">{tmpl.title}</p>
+                    <p className="line-clamp-2 text-sm text-zinc-500">{tmpl.message}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {pushHistory.length > 0 && (
+            <div className="mt-8">
+              <h3 className="mb-2 font-medium">התראות שנשמרו</h3>
+              <div className="space-y-2">
+                {pushHistory.slice(0, 10).map((msg) => (
+                  <div
+                    key={msg.id}
+                    className="rounded-lg border border-zinc-200 p-3 text-sm dark:border-zinc-600"
+                  >
+                    <p className="font-medium">{msg.title}</p>
+                    <p className="text-zinc-500 dark:text-zinc-400">{msg.message}</p>
+                    <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                      {new Date(msg.sendAt).toLocaleString()} | {msg.target === "all" ? "כל הלקוחות" : `${msg.customerIds.length} לקוחות`} |{" "}
+                      {msg.sendSms ? "SMS כן" : "SMS לא"}
+                    </p>
                   </div>
                 ))}
               </div>
@@ -400,9 +531,7 @@ export default function AdminNotificationsPage() {
       {activeTab === "new-customer" && (
         <div className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
           <h2 className="mb-4 font-medium">{t("notifications.newCustomerTitle")}</h2>
-          <p className="mb-4 text-sm text-zinc-500 dark:text-zinc-400">
-            {t("notifications.newCustomerDesc")}
-          </p>
+          <p className="mb-4 text-sm text-zinc-500 dark:text-zinc-400">{t("notifications.newCustomerDesc")}</p>
           <div className="space-y-4">
             <label className="flex cursor-pointer items-center gap-3">
               <input

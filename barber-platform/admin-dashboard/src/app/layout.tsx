@@ -1,20 +1,11 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { QueryProvider } from "@/components/providers/query-provider";
 import { LocaleProvider } from "@/components/providers/locale-provider";
 import { NotificationProvider } from "@/components/providers/notification-provider";
 import { ToastProvider } from "@/components/providers/toast-provider";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+import { SessionBootstrap } from "@/components/providers/session-bootstrap";
+import { RouteProgressBar } from "@/components/ui/route-progress-bar";
 
 export const metadata: Metadata = {
   title: "תורן | פלטפורמה לזימון תורים",
@@ -27,21 +18,24 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" dir="ltr" suppressHydrationWarning>
+    <html lang="he" dir="rtl" suppressHydrationWarning>
       <head>
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){var s=document.documentElement;try{var loc=JSON.parse(localStorage.getItem("locale-storage")||"{}");var dir=loc.state?.dir||"ltr";var lang=loc.state?.locale||"en";s.dir=dir;s.lang=lang;}catch(e){}try{var th=JSON.parse(localStorage.getItem("theme-storage")||"{}");var theme=th.state?.theme||"dark";var colorScheme=th.state?.colorScheme||"dark";s.setAttribute("data-theme",theme);s.classList.toggle("dark",colorScheme==="dark");}catch(e){}})();`,
+            __html: `(function(){var s=document.documentElement;try{var loc=JSON.parse(localStorage.getItem("locale-storage")||"{}");var dir=loc.state?.dir||"rtl";var lang=loc.state?.locale||"he";s.dir=dir;s.lang=lang;}catch(e){}try{var th=JSON.parse(localStorage.getItem("theme-storage")||"{}");var theme=th.state?.theme||"ocean";var colorScheme=th.state?.colorScheme||"dark";s.setAttribute("data-theme",theme);s.classList.toggle("dark",colorScheme==="dark");}catch(e){}})();`,
           }}
         />
       </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className="antialiased"
         suppressHydrationWarning
       >
+        <RouteProgressBar />
         <QueryProvider>
           <LocaleProvider>
-            <NotificationProvider>{children}</NotificationProvider>
+            <SessionBootstrap>
+              <NotificationProvider>{children}</NotificationProvider>
+            </SessionBootstrap>
             <ToastProvider />
           </LocaleProvider>
         </QueryProvider>

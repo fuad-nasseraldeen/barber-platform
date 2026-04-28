@@ -113,3 +113,61 @@ If you still use Render, see [docs/RENDER_DEPLOY.md](docs/RENDER_DEPLOY.md).
 - [Employee Permissions](docs/EMPLOYEE_PERMISSIONS.md)
 - [Schema Design](docs/SCHEMA_DESIGN.md)
 - [Performance](docs/PERFORMANCE_ARCHITECTURE.md)
+
+## Appointment Create Diagnostics
+
+Diagnostic-only tooling for `POST /api/v1/appointments/create` latency analysis.
+
+### Commands
+
+```bash
+npm run diag:db-latency
+npm run diag:tx-latency
+npm run diag:booking-sql
+npm run diag:db-schema
+```
+
+### Run Locally (Israel laptop -> Supabase Paris)
+
+1. Ensure `backend/.env` points to the same Supabase DB used by backend (`DATABASE_URL`).
+2. Run diagnostics from backend folder:
+
+```bash
+npm run diag:db-latency
+npm run diag:tx-latency
+npm run diag:booking-sql
+npm run diag:db-schema
+```
+
+### Run On Railway (Amsterdam runtime -> Supabase Paris)
+
+Use Railway shell/exec on the deployed backend service and run the same commands:
+
+```bash
+npm run diag:db-latency
+npm run diag:tx-latency
+npm run diag:booking-sql
+npm run diag:db-schema
+```
+
+### Compare These Metrics
+
+- `diag:db-latency`: `SELECT 1` sequential/concurrent and simple `findFirst` baselines.
+- `diag:tx-latency`: empty tx vs tx with 1/3/10 selects.
+- `APPOINTMENT_CREATE_TIMING.queryTrace`: per-query order in create flow:
+  - `phaseName`
+  - `model`
+  - `action`
+  - `durationMs`
+  - `cumulativeTxMs`
+  - `insideTransaction`
+- `APPOINTMENT_CREATE_DB_WAIT_DIAGNOSTICS`: `pg_stat_activity` wait samples + `pg_blocking_pids`.
+- `diag:booking-sql`: `EXPLAIN ANALYZE` plans for key booking-related queries.
+- `diag:db-schema`: indexes/constraints/triggers/FKs on `appointments`, `slot_holds`, `time_slots`.
+
+### Interpretation Guide
+
+- `SELECT 1 avg` high: network path / DB connectivity / pooler path issue.
+- transaction baseline high: Prisma transaction overhead / pooler / DB transaction setup overhead.
+- one query very high in `queryTrace`: lock wait, missing index, constraint/trigger heavy path, or slow plan.
+- many small queries high cumulatively: round-trip accumulation due to query count.

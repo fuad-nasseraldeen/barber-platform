@@ -9,6 +9,8 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useTranslation } from "@/hooks/use-translation";
 import { LocaleSwitcher } from "@/components/ui/locale-switcher";
 import { GoogleLoginButton } from "@/components/auth/GoogleLoginButton";
+import { BirthDateTripleInput } from "@/components/ui/birth-date-triple-input";
+import { GenderToggle } from "@/components/ui/gender-toggle";
 import toast from "react-hot-toast";
 
 /** Israeli mobile: 05X-XXXXXXX (10 digits) */
@@ -37,7 +39,6 @@ export default function RegisterShopPage() {
   const t = useTranslation();
   const user = useAuthStore((s) => s.user);
   const accessToken = useAuthStore((s) => s.accessToken);
-  const refreshToken = useAuthStore((s) => s.refreshToken);
   const setAuth = useAuthStore((s) => s.setAuth);
   const hasHydrated = useAuthStore((s) => s._hasHydrated);
 
@@ -52,9 +53,7 @@ export default function RegisterShopPage() {
   const [ownerPhone, setOwnerPhone] = useState("");
   const [code, setCode] = useState("");
   const [phoneStep, setPhoneStep] = useState<"phone" | "code">("phone");
-  const [ownerBirthDay, setOwnerBirthDay] = useState("");
-  const [ownerBirthMonth, setOwnerBirthMonth] = useState("");
-  const [ownerBirthYear, setOwnerBirthYear] = useState("");
+  const [ownerBirthDate, setOwnerBirthDate] = useState("");
   const [ownerGender, setOwnerGender] = useState<"MALE" | "FEMALE" | "">("");
   const [loading, setLoading] = useState(false);
   const [otpLoading, setOtpLoading] = useState(false);
@@ -134,10 +133,7 @@ export default function RegisterShopPage() {
         owner: {
           firstName: ownerFirstName,
           lastName: ownerLastName,
-          birthDate:
-            ownerBirthDay && ownerBirthMonth && ownerBirthYear
-              ? `${ownerBirthYear}-${ownerBirthMonth.padStart(2, "0")}-${ownerBirthDay.padStart(2, "0")}`
-              : undefined,
+          birthDate: ownerBirthDate || undefined,
           gender: ownerGender || undefined,
         },
       };
@@ -154,11 +150,7 @@ export default function RegisterShopPage() {
       });
       setPhoneVerified(true);
       setError("");
-      setAuth(
-        { ...user!, businessId: business.id, role: "owner" },
-        accessToken,
-        refreshToken
-      );
+      setAuth({ ...user!, businessId: business.id, role: "owner" }, accessToken);
       setTimeout(() => router.push("/admin/dashboard"), 1000);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "";
@@ -433,7 +425,6 @@ export default function RegisterShopPage() {
                       try {
                         const res = await apiClient<{
                           accessToken: string;
-                          refreshToken: string;
                           user: { id: string; phone?: string; email?: string; name?: string; businessId?: string; role?: string; staffId?: string };
                         }>("/auth/link-google", {
                           method: "POST",
@@ -449,8 +440,7 @@ export default function RegisterShopPage() {
                             role: (res.user.role as "owner" | "manager" | "staff" | "customer") ?? "customer",
                             staffId: res.user.staffId,
                           },
-                          res.accessToken,
-                          res.refreshToken
+                          res.accessToken
                         );
                         toast.success(t("settings.googleLinked"));
                       } catch (e) {
@@ -463,66 +453,17 @@ export default function RegisterShopPage() {
               )}
             </div>
 
-            <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap">
-              <div className="min-w-0 flex-1 sm:basis-48">
-                <label className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                  {t("register.birthDateOptional")}
-                </label>
-                <div className="flex flex-col gap-2 sm:flex-row sm:gap-1">
-                  <div className="flex gap-1">
-                    <select
-                      value={ownerBirthDay}
-                      onChange={(e) => setOwnerBirthDay(e.target.value)}
-                      className="min-w-0 flex-1 rounded-lg border border-zinc-300 px-2 py-2 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100"
-                    >
-                      <option value="">{t("register.day")}</option>
-                      {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
-                        <option key={d} value={d}>
-                          {d}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      value={ownerBirthMonth}
-                      onChange={(e) => setOwnerBirthMonth(e.target.value)}
-                      className="min-w-0 flex-1 rounded-lg border border-zinc-300 px-2 py-2 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100"
-                    >
-                      <option value="">{t("register.month")}</option>
-                      {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((i) => (
-                        <option key={i} value={String(i).padStart(2, "0")}>
-                          {t(`register.month${i}`)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <select
-                    value={ownerBirthYear}
-                    onChange={(e) => setOwnerBirthYear(e.target.value)}
-                    className="w-full rounded-lg border border-zinc-300 px-2 py-2 sm:min-w-0 sm:flex-1 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100"
-                  >
-                    <option value="">{t("register.year")}</option>
-                    {Array.from({ length: 75 }, (_, i) => new Date().getFullYear() - 18 - i).map((y) => (
-                      <option key={y} value={y}>
-                        {y}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              <div className="w-full shrink-0 sm:w-28">
-                <label className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                  {t("register.genderRequired")}
-                </label>
-                <select
-                  value={ownerGender}
-                  onChange={(e) => setOwnerGender(e.target.value as "MALE" | "FEMALE" | "")}
-                  className="w-full rounded-lg border border-zinc-300 px-3 py-2 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100"
-                >
-                  <option value="">{t("register.select")}</option>
-                  <option value="MALE">{t("customers.genderMale")}</option>
-                  <option value="FEMALE">{t("customers.genderFemale")}</option>
-                </select>
-              </div>
+            <div className="flex flex-col gap-5">
+              <BirthDateTripleInput
+                labelKey="register.birthDateOptional"
+                value={ownerBirthDate}
+                onChange={setOwnerBirthDate}
+              />
+              <GenderToggle
+                labelKey="register.genderRequired"
+                value={ownerGender}
+                onChange={(v) => setOwnerGender(v === "OTHER" ? "" : v)}
+              />
             </div>
             <div className="flex gap-2">
               <button

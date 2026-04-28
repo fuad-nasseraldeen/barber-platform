@@ -52,12 +52,18 @@ import {
   ValidateBookingSlotResult,
 } from './booking-validation.service';
 import {
+  getAppointmentCreateTraceEntries,
+  getRequestContext,
   getLogContext,
   getPrismaMiddlewareQueryRecords,
   getPrismaQueryEventRecords,
   getPrismaQueryDurationMs,
   getRequestId,
   resetPrismaQueryDurationMs,
+  setAppointmentCreateTraceInsideTransaction,
+  setAppointmentCreateTracePhase,
+  startAppointmentCreateTrace,
+  stopAppointmentCreateTrace,
 } from '../common/request-context';
 import {
   ACCEPTABLE_MONITORING_RATES,
@@ -166,6 +172,54 @@ type DirtyWindow = { startMin: number; endMin: number };
 type DirtyWindowsPayload = { v: 1; w: Array<[number, number]> };
 type ReadRepairSpanSource = 'appointment' | 'slot_hold' | 'buffer';
 type ReadRepairSpan = { startTime: Date; endTime: Date; source?: ReadRepairSpanSource };
+
+type AppointmentCreateSlowQuery = {
+  model: string;
+  action: string;
+  durationMs: number;
+  sqlDurationMs?: number;
+  sql?: string;
+};
+
+type AppointmentCreateRepeatedQuery = {
+  fingerprint: string;
+  count: number;
+  totalMs: number;
+};
+
+type AppointmentCreateTimingState = {
+  requestStartMs: number;
+  requestEnteredMs: number;
+  authMs: number;
+  dtoValidationMs: number;
+  customerLoadMs: number;
+  staffLoadMs: number;
+  serviceLoadMs: number;
+  staffServiceValidationMs: number;
+  slotHoldValidationMs: number;
+  availabilityValidationMs: number;
+  timeSlotUpdateMs: number;
+  transactionMs: number;
+  appointmentInsertMs: number;
+  cacheInvalidationMs: number;
+  projectionSyncMs: number;
+  notificationMs: number;
+  analyticsMs: number;
+  responseBuildMs: number;
+  serializationMs: number;
+  holdLockMs: number;
+  overlapCheckMs: number;
+  slotHoldConsumeMs: number;
+  commitMs: number;
+  txTotalMs: number;
+  projectionRegeneratedDuringCreate: boolean;
+  notificationsAwaitedInsideCreate: boolean;
+  invalidatedKeyCount: number;
+  invalidationPatterns: string[];
+  staffId?: string;
+  serviceId?: string;
+  customerId?: string;
+};
 
 @Injectable()
 export class BookingService {
@@ -387,6 +441,160 @@ export class BookingService {
 
   private shouldMeasureSerialization(): boolean {
     return this.shouldLogBookingPerfPhases();
+  }
+
+  private createAppointmentCreateTimingState(): AppointmentCreateTimingState {
+    const requestStartMs = getRequestContext()?.requestStartMs ?? Date.now();
+    const requestEnteredMs = wallClockMs();
+    return {
+      requestStartMs,
+      requestEnteredMs,
+      authMs: Math.max(0, requestEnteredMs - requestStartMs),
+      dtoValidationMs: 0,
+      customerLoadMs: 0,
+      staffLoadMs: 0,
+      serviceLoadMs: 0,
+      staffServiceValidationMs: 0,
+      slotHoldValidationMs: 0,
+      availabilityValidationMs: 0,
+      timeSlotUpdateMs: 0,
+      transactionMs: 0,
+      appointmentInsertMs: 0,
+      cacheInvalidationMs: 0,
+      projectionSyncMs: 0,
+      notificationMs: 0,
+      analyticsMs: 0,
+      responseBuildMs: 0,
+      serializationMs: 0,
+      holdLockMs: 0,
+      overlapCheckMs: 0,
+      slotHoldConsumeMs: 0,
+      commitMs: 0,
+      txTotalMs: 0,
+      projectionRegeneratedDuringCreate: false,
+      notificationsAwaitedInsideCreate: false,
+      invalidatedKeyCount: 0,
+      invalidationPatterns: [],
+    };
+  }
+
+  private buildCreatePrismaDiagnostics(): {
+    prismaQueryCount: number;
+    prismaTotalMs: number;
+    slowQueries: AppointmentCreateSlowQuery[];
+    repeatedQueries: AppointmentCreateRepeatedQuery[];
+    projectionRegeneratedDuringCreate: boolean;
+  } {
+    const prismaQueries = getPrismaMiddlewareQueryRecords();
+    const prismaQueryEvents = getPrismaQueryEventRecords();
+    const prismaTotalMs = getPrismaQueryDurationMs() ?? 0;
+    const combined = prismaQueries.map((q, i) => {
+      const event = prismaQueryEvents[i];
+      const sql = event?.sql ?? '';
+      const sqlSnippet = sql.length > 300 ? `${sql.slice(0, 300)}…` : sql;
+      return {
+        model: q.model,
+        action: q.action,
+        durationMs: q.durationMs,
+        sqlDurationMs: event?.durationMs,
+        sql: sqlSnippet,
+      };
+    });
+
+    const slowQueries = combined
+      .filter((q) => q.durationMs >= 80 || (q.sqlDurationMs ?? 0) >= 80)
+      .sort((a, b) => Math.max(b.durationMs, b.sqlDurationMs ?? 0) - Math.max(a.durationMs, a.sqlDurationMs ?? 0))
+      .slice(0, 12);
+
+    const repeatedMap = new Map<string, { count: number; totalMs: number }>();
+    for (const q of combined) {
+      const fingerprint = `${q.model}.${q.action}:${q.sql ?? ''}`;
+      const curr = repeatedMap.get(fingerprint) ?? { count: 0, totalMs: 0 };
+      curr.count += 1;
+      curr.totalMs += q.durationMs;
+      repeatedMap.set(fingerprint, curr);
+    }
+    const repeatedQueries = Array.from(repeatedMap.entries())
+      .filter(([, v]) => v.count > 1)
+      .map(([fingerprint, v]) => ({
+        fingerprint: fingerprint.length > 220 ? `${fingerprint.slice(0, 220)}…` : fingerprint,
+        count: v.count,
+        totalMs: Math.round(v.totalMs),
+      }))
+      .sort((a, b) => b.count - a.count || b.totalMs - a.totalMs)
+      .slice(0, 12);
+
+    const projectionRegeneratedDuringCreate = combined.some((q) => {
+      const sql = (q.sql ?? '').toLowerCase();
+      if (!sql) return false;
+      return (
+        (sql.includes('time_slots') && sql.includes('insert into')) ||
+        (sql.includes('time_slots') && sql.includes('delete from')) ||
+        sql.includes('regenerate')
+      );
+    });
+
+    return {
+      prismaQueryCount: combined.length,
+      prismaTotalMs: Math.round(prismaTotalMs),
+      slowQueries,
+      repeatedQueries,
+      projectionRegeneratedDuringCreate,
+    };
+  }
+
+  private async sampleDbWaitDiagnostics(): Promise<{
+    capturedAtIso: string;
+    active: Array<{
+      pid: number;
+      state: string | null;
+      waitEventType: string | null;
+      waitEvent: string | null;
+      queryStart: string | null;
+      runningFor: string | null;
+      blockingPids: number[];
+      queryPreview: string | null;
+    }>;
+  }> {
+    const rows = await this.prisma.$queryRaw<Array<{
+      pid: number;
+      state: string | null;
+      waitEventType: string | null;
+      waitEvent: string | null;
+      queryStart: Date | null;
+      runningFor: unknown;
+      blockingPids: number[] | null;
+      queryPreview: string | null;
+    }>>`
+      SELECT
+        a.pid,
+        a.state,
+        a.wait_event_type AS "waitEventType",
+        a.wait_event AS "waitEvent",
+        a.query_start AS "queryStart",
+        now() - a.query_start AS "runningFor",
+        pg_blocking_pids(a.pid) AS "blockingPids",
+        left(a.query, 300) AS "queryPreview"
+      FROM pg_stat_activity a
+      WHERE a.datname = current_database()
+        AND a.pid <> pg_backend_pid()
+        AND a.state IS DISTINCT FROM 'idle'
+      ORDER BY a.query_start ASC
+      LIMIT 30
+    `;
+    return {
+      capturedAtIso: new Date().toISOString(),
+      active: rows.map((row) => ({
+        pid: row.pid,
+        state: row.state,
+        waitEventType: row.waitEventType,
+        waitEvent: row.waitEvent,
+        queryStart: row.queryStart ? row.queryStart.toISOString() : null,
+        runningFor: row.runningFor != null ? String(row.runningFor) : null,
+        blockingPids: row.blockingPids ?? [],
+        queryPreview: row.queryPreview,
+      })),
+    };
   }
 
   private shouldLogReschedulePerf(): boolean {
@@ -2981,14 +3189,109 @@ export class BookingService {
    * Admin: finalize booking from a live hold (staff may confirm holds created for any user).
    */
   async createAppointment(dto: CreateAppointmentDto) {
-    return this.confirmBookingFromHold(dto);
+    const timing = this.createAppointmentCreateTimingState();
+    resetPrismaQueryDurationMs();
+    startAppointmentCreateTrace();
+    setAppointmentCreateTracePhase('create_appointment_entry');
+    const requestId = getRequestId();
+
+    try {
+      const appointment = await this.confirmBookingFromHold(dto, {
+        operation: 'POST /appointments/create',
+        createTiming: timing,
+      });
+      return appointment;
+    } finally {
+      const totalMs = Math.round(wallClockMs() - timing.requestStartMs);
+      const prisma = this.buildCreatePrismaDiagnostics();
+      const projectionRegeneratedDuringCreate =
+        timing.projectionRegeneratedDuringCreate ||
+        prisma.projectionRegeneratedDuringCreate;
+
+      this.logger.log(
+        JSON.stringify({
+          type: 'APPOINTMENT_CREATE_TIMING',
+          requestId,
+          businessId: dto.businessId,
+          staffId: timing.staffId ?? null,
+          serviceId: timing.serviceId ?? null,
+          customerId: timing.customerId ?? null,
+          totalMs,
+          authMs: Math.round(timing.authMs),
+          dtoValidationMs: Math.round(timing.dtoValidationMs),
+          customerLoadMs: Math.round(timing.customerLoadMs),
+          staffLoadMs: Math.round(timing.staffLoadMs),
+          serviceLoadMs: Math.round(timing.serviceLoadMs),
+          staffServiceValidationMs: Math.round(timing.staffServiceValidationMs),
+          slotHoldValidationMs: Math.round(timing.slotHoldValidationMs),
+          availabilityValidationMs: Math.round(timing.availabilityValidationMs),
+          timeSlotUpdateMs: Math.round(timing.timeSlotUpdateMs),
+          transactionMs: Math.round(timing.transactionMs),
+          appointmentInsertMs: Math.round(timing.appointmentInsertMs),
+          cacheInvalidationMs: Math.round(timing.cacheInvalidationMs),
+          projectionSyncMs: Math.round(timing.projectionSyncMs),
+          notificationMs: Math.round(timing.notificationMs),
+          analyticsMs: Math.round(timing.analyticsMs),
+          responseBuildMs: Math.round(timing.responseBuildMs),
+          serializationMs: Math.round(timing.serializationMs),
+          prismaQueryCount: prisma.prismaQueryCount,
+          prismaTotalMs: prisma.prismaTotalMs,
+          slowQueries: prisma.slowQueries,
+          repeatedQueries: prisma.repeatedQueries,
+          projectionRegeneratedDuringCreate,
+          notificationsAwaitedInsideCreate: timing.notificationsAwaitedInsideCreate,
+          invalidatedKeyCount: timing.invalidatedKeyCount,
+          invalidationPatterns: timing.invalidationPatterns,
+          queryTrace: getAppointmentCreateTraceEntries(),
+        }),
+      );
+
+      this.logger.log(
+        JSON.stringify({
+          type: 'APPOINTMENT_CREATE_TX_TIMING',
+          requestId,
+          txTotalMs: Math.round(timing.txTotalMs),
+          holdLockMs: Math.round(timing.holdLockMs),
+          overlapCheckMs: Math.round(timing.overlapCheckMs),
+          appointmentInsertMs: Math.round(timing.appointmentInsertMs),
+          timeSlotBlockMs: Math.round(timing.timeSlotUpdateMs),
+          slotHoldConsumeMs: Math.round(timing.slotHoldConsumeMs),
+          commitMs: Math.round(timing.commitMs),
+        }),
+      );
+      if (totalMs >= 1500 || timing.transactionMs >= 1200) {
+        try {
+          const waitDiagnostics = await this.sampleDbWaitDiagnostics();
+          this.logger.log(
+            JSON.stringify({
+              type: 'APPOINTMENT_CREATE_DB_WAIT_DIAGNOSTICS',
+              requestId,
+              businessId: dto.businessId,
+              totalMs,
+              transactionMs: Math.round(timing.transactionMs),
+              ...waitDiagnostics,
+            }),
+          );
+        } catch (error) {
+          this.logger.warn(
+            `[APPOINTMENT_CREATE_DB_WAIT_DIAGNOSTICS] failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      stopAppointmentCreateTrace();
+    }
   }
 
   /**
    * Public book endpoint: same atomic confirm; optional `requireHoldOwnerUserId` enforces hold.userId (customers).
    */
   async bookAppointment(dto: BookAppointmentDto, requireHoldOwnerUserId?: string) {
-    return this.confirmBookingFromHold(dto, { requireHoldOwnerUserId });
+    return this.confirmBookingFromHold(dto, {
+      requireHoldOwnerUserId,
+      operation: 'POST /appointments/book',
+    });
   }
 
   /**
@@ -2998,20 +3301,31 @@ export class BookingService {
    */
   async confirmBookingFromHold(
     dto: ConfirmBookingFromHoldDto,
-    opts?: { requireHoldOwnerUserId?: string },
+    opts?: {
+      requireHoldOwnerUserId?: string;
+      operation?: 'POST /appointments/book' | 'POST /appointments/create';
+      createTiming?: AppointmentCreateTimingState;
+    },
   ) {
     this.metrics.incrementBookingAttempt(dto.businessId);
 
     type Row = Prisma.AppointmentGetPayload<{ select: typeof BookingService.appointmentInsertSelect }>;
 
     const t0 = wallClockMs();
-    const operation = 'POST /appointments/book';
+    const operation = opts?.operation ?? 'POST /appointments/book';
+    const createTiming = opts?.createTiming;
     let requestParsingMs = 0;
     let txStartedAt = 0;
     let preTransactionMs = 0;
     let dbTransactionMs = 0;
     let postTransactionSideEffectsMs = 0;
     let postBookingCacheInvalidationMs = 0;
+    let txCallbackMs = 0;
+    let txHoldLockMs = 0;
+    let txOverlapCheckMs = 0;
+    let txAppointmentInsertMs = 0;
+    let txTimeSlotBlockMs = 0;
+    let txSlotHoldConsumeMs = 0;
     let appointment: Row | undefined;
     let confirmTz: string | undefined;
     let bookingInserted = false;
@@ -3063,7 +3377,8 @@ export class BookingService {
         }
         ({ timezone: confirmTz } = await this.getBusinessTimezone(dto.businessId));
         const tz = confirmTz;
-        if (!replayedFromIdempotency) {
+      if (!replayedFromIdempotency) {
+          createTiming && setAppointmentCreateTracePhase('transaction_begin');
           const tTx0 = wallClockMs();
           txStartedAt = tTx0;
           preTransactionMs = tTx0 - t0;
@@ -3081,8 +3396,11 @@ export class BookingService {
 
           appointment = await this.prisma.$transaction(
             async (tx) => {
+              createTiming && setAppointmentCreateTraceInsideTransaction(true);
+              const txCallbackStart = wallClockMs();
               const now = utcNowJsDate();
 
+              createTiming && setAppointmentCreateTracePhase('tx_hold_lock');
               const [hold] = await tx.$queryRaw<Array<{
                 id: string;
                 businessId: string;
@@ -3111,14 +3429,17 @@ export class BookingService {
               `;
               const tLock = wallClockMs();
               const tHoldRead = tLock;
+              txHoldLockMs += tLock - tTx0;
 
               if (!hold) {
+                txCallbackMs += wallClockMs() - txCallbackStart;
                 throw new NotFoundException({
                   code: HOLD_NOT_FOUND,
                   message: 'Slot hold not found.',
                 });
               }
               if (hold.businessId !== dto.businessId) {
+                txCallbackMs += wallClockMs() - txCallbackStart;
                 throw new ForbiddenException({
                   code: HOLD_BUSINESS_MISMATCH,
                   message: 'Hold does not belong to this business.',
@@ -3126,6 +3447,7 @@ export class BookingService {
               }
 
               if (opts?.requireHoldOwnerUserId && hold.userId !== opts.requireHoldOwnerUserId) {
+                txCallbackMs += wallClockMs() - txCallbackStart;
                 throw new ForbiddenException({
                   code: HOLD_FORBIDDEN,
                   message: 'This hold was created by another user.',
@@ -3133,6 +3455,7 @@ export class BookingService {
               }
 
               if (hold.consumedAt != null) {
+                txCallbackMs += wallClockMs() - txCallbackStart;
                 throw new ConflictException({
                   code: HOLD_ALREADY_USED,
                   message: 'This slot hold was already used.',
@@ -3140,13 +3463,20 @@ export class BookingService {
               }
 
               if (hold.expiresAt <= now) {
+                txCallbackMs += wallClockMs() - txCallbackStart;
                 throw new BadRequestException({
                   code: HOLD_EXPIRED,
                   message: 'Slot hold has expired.',
                 });
               }
+              const tHoldValidationDone = wallClockMs();
+              createTiming && (createTiming.slotHoldValidationMs += tHoldValidationDone - tHoldRead);
+              createTiming && (createTiming.staffId = hold.staffId);
+              createTiming && (createTiming.serviceId = hold.serviceId);
+              createTiming && (createTiming.customerId = hold.customerId);
 
               const tOverlap = wallClockMs();
+              createTiming && setAppointmentCreateTracePhase('tx_overlap_check');
               const tBizTz = tOverlap;
               const dateYmd = formatBusinessTime(hold.startTime, tz, 'yyyy-MM-dd');
               const startHhmm = formatBusinessTime(hold.startTime, tz, 'HH:mm');
@@ -3161,9 +3491,12 @@ export class BookingService {
                     generalSettings?: { requireCustomerArrivalConfirmation?: boolean };
                   } | null)?.generalSettings?.requireCustomerArrivalConfirmation
                 ) === true;
+              txOverlapCheckMs += wallClockMs() - tOverlap;
 
               await tx.$executeRawUnsafe('SAVEPOINT booking_confirm_appt');
               try {
+                createTiming && setAppointmentCreateTracePhase('tx_appointment_insert');
+                const tInsertStart = wallClockMs();
                 const created = await tx.appointment.create({
                   data: {
                     businessId: hold.businessId,
@@ -3182,6 +3515,7 @@ export class BookingService {
                   },
                   select: BookingService.appointmentInsertSelect,
                 });
+                txAppointmentInsertMs += wallClockMs() - tInsertStart;
                 try {
                   await tx.$executeRaw`
                     UPDATE appointments
@@ -3195,19 +3529,26 @@ export class BookingService {
                 }
 
                 if (updateTimeSlotsInBookTx) {
+                  createTiming && setAppointmentCreateTracePhase('tx_time_slot_block');
+                  const tTimeSlotsStart = wallClockMs();
                   await this.timeSlots.bookSlotsInTransaction(
                     tx,
                     dto.slotHoldId,
                     created.id,
                   );
+                  txTimeSlotBlockMs += wallClockMs() - tTimeSlotsStart;
                 }
 
+                const tConsumeStart = wallClockMs();
+                createTiming && setAppointmentCreateTracePhase('tx_slot_hold_consume');
                 await tx.slotHold.update({
                   where: { id: hold.id },
                   data: { consumedAt: now },
                 });
+                txSlotHoldConsumeMs += wallClockMs() - tConsumeStart;
 
                 await tx.$executeRawUnsafe('RELEASE SAVEPOINT booking_confirm_appt');
+                createTiming && setAppointmentCreateTracePhase('tx_commit_release_savepoint');
                 bookingInserted = true;
 
                 if (perfLog) {
@@ -3224,9 +3565,13 @@ export class BookingService {
                   }));
                 }
 
+                txCallbackMs += wallClockMs() - txCallbackStart;
+
                 return created;
               } catch (e: unknown) {
+                createTiming && setAppointmentCreateTracePhase('tx_error_rollback_savepoint');
                 await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT booking_confirm_appt');
+                txCallbackMs += wallClockMs() - txCallbackStart;
                 if (isTransientInsertFailure(e)) {
                   throw e;
                 }
@@ -3249,7 +3594,19 @@ export class BookingService {
             },
             getBookingAtomicBookTxOptions(),
           );
+          createTiming && setAppointmentCreateTraceInsideTransaction(false);
+          createTiming && setAppointmentCreateTracePhase('transaction_end');
           dbTransactionMs = wallClockMs() - tTx0;
+          if (createTiming) {
+            createTiming.transactionMs += dbTransactionMs;
+            createTiming.txTotalMs += dbTransactionMs;
+            createTiming.holdLockMs += txHoldLockMs;
+            createTiming.overlapCheckMs += txOverlapCheckMs;
+            createTiming.appointmentInsertMs += txAppointmentInsertMs;
+            createTiming.timeSlotUpdateMs += txTimeSlotBlockMs;
+            createTiming.slotHoldConsumeMs += txSlotHoldConsumeMs;
+            createTiming.commitMs += Math.max(0, dbTransactionMs - txCallbackMs);
+          }
           this.emitPerfPhase({
             event: 'BOOK_PHASE',
             operation,
@@ -3268,6 +3625,8 @@ export class BookingService {
           });
         }
       } catch (e: unknown) {
+        createTiming && setAppointmentCreateTraceInsideTransaction(false);
+        createTiming && setAppointmentCreateTracePhase('transaction_error');
         if (txStartedAt > 0 && dbTransactionMs === 0) {
           dbTransactionMs = wallClockMs() - txStartedAt;
           this.emitPerfPhase({
@@ -3330,7 +3689,16 @@ export class BookingService {
         }
       }
 
-      const postInsertPerf = { cacheMs: 0, sideEffectsMs: 0 };
+      const postInsertPerf: {
+        cacheMs: number;
+        sideEffectsMs: number;
+        notificationMs?: number;
+        analyticsMs?: number;
+        projectionSyncMs?: number;
+        notificationsAwaitedInsideRequest?: boolean;
+        invalidatedKeyCount?: number;
+        invalidationPatterns?: string[];
+      } = { cacheMs: 0, sideEffectsMs: 0 };
       if (bookingInserted) {
         const bookingDateYmd =
           confirmTz != null
@@ -3372,6 +3740,20 @@ export class BookingService {
         );
         postTransactionSideEffectsMs = postInsertPerf.sideEffectsMs;
         postBookingCacheInvalidationMs = postInsertPerf.cacheMs;
+        if (createTiming) {
+          createTiming.cacheInvalidationMs += postInsertPerf.cacheMs;
+          createTiming.notificationMs += postInsertPerf.notificationMs ?? 0;
+          createTiming.analyticsMs += postInsertPerf.analyticsMs ?? 0;
+          createTiming.projectionSyncMs += postInsertPerf.projectionSyncMs ?? 0;
+          createTiming.notificationsAwaitedInsideCreate =
+            createTiming.notificationsAwaitedInsideCreate ||
+            !!postInsertPerf.notificationsAwaitedInsideRequest;
+          createTiming.invalidatedKeyCount += postInsertPerf.invalidatedKeyCount ?? 0;
+          const patterns = postInsertPerf.invalidationPatterns ?? [];
+          if (patterns.length > 0) {
+            createTiming.invalidationPatterns.push(...patterns);
+          }
+        }
         this.emitPerfPhase({
           event: 'BOOK_PHASE',
           operation,
@@ -3407,6 +3789,10 @@ export class BookingService {
         throw new NotFoundException('Appointment not found after booking confirmation');
       }
       const serializationMs = this.measureSerializationMs(appointment);
+      if (createTiming) {
+        createTiming.responseBuildMs += serializationMs;
+        createTiming.serializationMs += serializationMs;
+      }
       statusCode = 201;
       resultType = 'success';
       this.emitPerfPhase({
@@ -3503,7 +3889,16 @@ export class BookingService {
     },
     appointmentId: string,
     startTimeUtc: Date,
-    perf?: { cacheMs: number; sideEffectsMs: number },
+    perf?: {
+      cacheMs: number;
+      sideEffectsMs: number;
+      notificationMs?: number;
+      analyticsMs?: number;
+      projectionSyncMs?: number;
+      notificationsAwaitedInsideRequest?: boolean;
+      invalidatedKeyCount?: number;
+      invalidationPatterns?: string[];
+    },
     preloadedTimeZone?: string,
   ): Promise<void> {
     const tz = preloadedTimeZone ?? (await this.getBusinessTimezone(row.businessId)).timezone;
@@ -3512,6 +3907,7 @@ export class BookingService {
     const endHhmm = formatBusinessTime(row.endTime, tz, 'HH:mm');
 
     const tSideEffects0 = wallClockMs();
+    const tNotification0 = wallClockMs();
     this.notifications
       .notifyAppointmentBooked({
         businessId: row.businessId,
@@ -3533,8 +3929,19 @@ export class BookingService {
     this.automation
       .scheduleAppointmentReminder(appointmentId, row.businessId, startTimeUtc)
       .catch((e: unknown) => console.error('[Booking] scheduleAppointmentReminder failed:', e));
+    if (perf) {
+      perf.notificationMs = (perf.notificationMs ?? 0) + (wallClockMs() - tNotification0);
+      perf.notificationsAwaitedInsideRequest = false;
+    }
 
+    const tAnalytics0 = wallClockMs();
     this.metrics.incrementBookingSuccess(row.businessId);
+    if (perf) {
+      perf.analyticsMs = (perf.analyticsMs ?? 0) + (wallClockMs() - tAnalytics0);
+      perf.projectionSyncMs = perf.projectionSyncMs ?? 0;
+      perf.invalidatedKeyCount = perf.invalidatedKeyCount ?? 0;
+      perf.invalidationPatterns = perf.invalidationPatterns ?? [];
+    }
     if (perf) {
       perf.sideEffectsMs += wallClockMs() - tSideEffects0;
     }

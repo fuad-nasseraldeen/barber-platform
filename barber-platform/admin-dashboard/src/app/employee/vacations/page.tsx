@@ -4,7 +4,6 @@ import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api-client";
 import { useAuthStore } from "@/stores/auth-store";
-import { useBranchStore } from "@/stores/branch-store";
 import { useEmployeeStaffId } from "@/hooks/use-employee-staff-id";
 import { useTranslation } from "@/hooks/use-translation";
 import { Plane, Plus, X, Calendar, List } from "lucide-react";
@@ -156,7 +155,6 @@ export default function EmployeeVacationsPage() {
   const locale = useLocaleStore((s) => s.locale);
   const queryClient = useQueryClient();
   const businessId = useAuthStore((s) => s.user?.businessId);
-  const selectedBranchId = useBranchStore((s) => s.selectedBranchId);
   const staffId = useEmployeeStaffId();
   const [showForm, setShowForm] = useState(false);
   const [startDate, setStartDate] = useState("");

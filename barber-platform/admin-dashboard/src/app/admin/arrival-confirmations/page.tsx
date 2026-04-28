@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api-client";
 import { useAuthStore } from "@/stores/auth-store";
-import { useBranchStore } from "@/stores/branch-store";
+import { useEffectiveBranchId } from "@/hooks/use-effective-branch-id";
 import { useTranslation } from "@/hooks/use-translation";
 import { useLocaleStore } from "@/stores/locale-store";
 import Link from "next/link";
@@ -49,7 +49,7 @@ export default function ArrivalConfirmationsPage() {
   const t = useTranslation();
   const locale = useLocaleStore((s) => s.locale);
   const businessId = useAuthStore((s) => s.user?.businessId);
-  const selectedBranchId = useBranchStore((s) => s.selectedBranchId);
+  const selectedBranchId = useEffectiveBranchId(businessId);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("date");

@@ -5,6 +5,8 @@
 /* Theme: dark - light mode (Theme=Dark, Mode=Light) */
 :root,
 [data-theme="dark"] {
+  --font-geist-sans: system-ui;
+  --font-geist-mono: ui-monospace;
   --background: #f4f4f5;
   --foreground: #18181b;
   --primary: #3b82f6;
@@ -182,7 +184,7 @@ textarea:focus {
   outline-offset: 2px;
 }
 
-/* Page transition - minimal fade + slide, 400ms */
+/* Page transition - minimal fade + slide, 200ms fallback */
 @keyframes pageTransitionIn {
   from {
     opacity: 0;
@@ -194,7 +196,19 @@ textarea:focus {
   }
 }
 .page-transition-enter-active {
-  animation: pageTransitionIn 400ms ease-out forwards;
+  animation: pageTransitionIn 200ms ease-out forwards;
+}
+
+.route-progress-bar {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--primary) 76%, transparent),
+    var(--primary),
+    color-mix(in srgb, var(--primary) 72%, white)
+  );
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--primary) 30%, transparent),
+    0 0 16px color-mix(in srgb, var(--primary) 55%, transparent);
 }
 
 /* Skeleton - primary color pulse */
@@ -351,51 +365,326 @@ html.dark input[type="checkbox"]::before {
   }
 }
 
-/* FullCalendar - Appointment blocks: Color accent + clean card */
+/* FullCalendar Premium - Modern resource scheduler (one column per staff) */
+.appointment-fullcalendar .fc {
+  font-family: inherit;
+}
+.appointment-fullcalendar .fc-theme-standard .fc-scrollgrid {
+  border-radius: 12px;
+  overflow: hidden;
+}
+.appointment-fullcalendar .fc-col-header-cell {
+  background: rgb(250 250 250);
+  font-weight: 600;
+  padding: 10px 12px;
+}
+.dark .appointment-fullcalendar .fc-col-header-cell {
+  background: rgb(39 39 42);
+}
+.appointment-fullcalendar .fc-resource-group-cell {
+  background: rgb(250 250 250);
+  font-weight: 600;
+  padding: 10px 12px;
+}
+.dark .appointment-fullcalendar .fc-resource-group-cell {
+  background: rgb(39 39 42);
+}
 .appointment-fullcalendar .fc-appointment-event {
   border-radius: 12px;
-  padding: 6px 8px;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  padding: 6px 10px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
   border-left-width: 4px !important;
   margin-bottom: 2px;
-  min-height: 32px;
+  min-height: 36px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 .appointment-fullcalendar .fc-appointment-event:hover {
-  transform: scale(1.02);
-  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.15);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.12);
 }
 .appointment-fullcalendar .fc-break-event {
   background: repeating-linear-gradient(
     -45deg,
-    rgba(113, 113, 122, 0.25),
-    rgba(113, 113, 122, 0.25) 8px,
-    rgba(161, 161, 170, 0.12) 8px,
-    rgba(161, 161, 170, 0.12) 16px
+    rgba(113, 113, 122, 0.2),
+    rgba(113, 113, 122, 0.2) 6px,
+    rgba(161, 161, 170, 0.1) 6px,
+    rgba(161, 161, 170, 0.1) 12px
   ) !important;
-  border: 1px solid rgba(113, 113, 122, 0.4) !important;
+  border: 1px solid rgba(113, 113, 122, 0.35) !important;
   border-radius: 12px;
   margin-bottom: 2px;
 }
 .appointment-fullcalendar .fc-vacation-event {
   background: repeating-linear-gradient(
     -45deg,
-    rgba(251, 191, 36, 0.18),
-    rgba(251, 191, 36, 0.18) 10px,
-    rgba(245, 158, 11, 0.06) 10px,
-    rgba(245, 158, 11, 0.06) 20px
+    rgba(251, 191, 36, 0.2),
+    rgba(251, 191, 36, 0.2) 8px,
+    rgba(245, 158, 11, 0.08) 8px,
+    rgba(245, 158, 11, 0.08) 16px
   ) !important;
   border: 2px solid rgba(245, 158, 11, 0.6) !important;
   border-radius: 12px;
 }
+.appointment-fullcalendar .fc-timegrid-slot {
+  min-height: 48px;
+}
 .appointment-fullcalendar .fc-timegrid-slot:hover {
-  background: rgba(99, 102, 241, 0.08);
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
   cursor: pointer;
 }
 .appointment-fullcalendar .fc-timegrid-now-indicator-line {
-  background: linear-gradient(90deg, #ec4899, #8b5cf6);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--primary),
+    transparent
+  );
   height: 2px;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--primary) 45%, transparent);
 }
 .appointment-fullcalendar .fc-timegrid-now-indicator-arrow {
-  border-color: #8b5cf6;
+  border-top-color: var(--primary);
+}
+.appointment-fullcalendar .fc-toolbar-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+.appointment-fullcalendar .fc-button {
+  border-radius: 8px;
+  font-weight: 500;
+  padding: 6px 12px;
+}
+.appointment-fullcalendar .fc-button-primary:not(:disabled) {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+}
+.appointment-fullcalendar .fc-button-primary:not(:disabled):hover {
+  background: var(--primary);
+  border-color: var(--primary);
+  filter: brightness(1.08);
+}
+.appointment-fullcalendar .fc-button-primary:not(:disabled).fc-button-active {
+  background: color-mix(in srgb, var(--primary) 88%, #000);
+  border-color: color-mix(in srgb, var(--primary) 88%, #000);
 }
 
+/* Staff schedule (admin day/week): enter animation + live “now” line */
+@keyframes staff-schedule-enter {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.988);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.staff-schedule-calendar-enter {
+  animation: staff-schedule-enter 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes staff-schedule-booking-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.staff-schedule-booking-enter {
+  animation: staff-schedule-booking-enter 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes schedule-fab-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.schedule-fab-menu-enter {
+  animation: schedule-fab-menu-in 0.2s ease-out both;
+}
+
+@keyframes block-dialog-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.block-time-dialog-overlay {
+  animation: block-dialog-overlay-in 0.18s ease-out both;
+}
+
+/* Day column: "today" uses theme --primary (gold / rose / ocean / …) */
+.calendar-day-is-today {
+  background: linear-gradient(
+    to bottom right,
+    color-mix(in srgb, var(--primary) 12%, var(--background)),
+    var(--background),
+    color-mix(in srgb, var(--primary) 8%, var(--background))
+  );
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--primary) 30%, transparent);
+}
+
+.calendar-day-header--default {
+  border-color: rgb(228 228 231);
+  background: color-mix(in srgb, var(--muted) 55%, var(--background));
+  color: var(--foreground);
+}
+
+.dark .calendar-day-header--default {
+  border-color: rgb(63 63 70);
+  background: color-mix(in srgb, var(--muted) 85%, var(--background));
+}
+
+.calendar-day-header--today {
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--muted));
+  background: color-mix(in srgb, var(--primary) 12%, var(--background));
+  color: var(--foreground);
+}
+
+.calendar-day-subdate {
+  color: var(--muted-foreground);
+}
+
+.calendar-today-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  padding: 0.125rem 0.5rem;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  line-height: 1.2;
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--primary) 40%, transparent);
+  animation: calendar-today-badge-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes calendar-today-badge-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 0.94;
+    filter: brightness(1.07);
+  }
+}
+
+@keyframes staff-schedule-now-pulse {
+  0%,
+  100% {
+    filter: brightness(1);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--primary-foreground) 25%, transparent),
+      0 0 16px color-mix(in srgb, var(--primary) 42%, transparent);
+  }
+  50% {
+    filter: brightness(1.06);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--primary-foreground) 30%, transparent),
+      0 0 26px color-mix(in srgb, var(--primary) 50%, transparent);
+  }
+}
+
+.staff-schedule-now-line {
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--primary) 22%, transparent) 8%,
+    var(--primary) 48%,
+    color-mix(in srgb, var(--primary) 75%, var(--background)) 78%,
+    transparent 100%
+  );
+  border: 2px solid color-mix(in srgb, var(--primary) 72%, var(--foreground));
+  animation: staff-schedule-now-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes appointment-create-modal-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-16px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.appointment-create-modal-enter {
+  animation: appointment-create-modal-enter 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes team-progress-accelerate {
+  0% {
+    transform: scaleX(0);
+    opacity: 0.65;
+    filter: saturate(0.9);
+  }
+  68% {
+    transform: scaleX(1.14);
+    opacity: 1;
+    filter: saturate(1.22);
+  }
+  100% {
+    transform: scaleX(1);
+    opacity: 1;
+    filter: saturate(1);
+  }
+}
+
+@keyframes team-progress-shimmer {
+  0% {
+    transform: translateX(-120%);
+    opacity: 0;
+  }
+  25% {
+    opacity: 0.55;
+  }
+  65% {
+    opacity: 0.3;
+  }
+  100% {
+    transform: translateX(120%);
+    opacity: 0;
+  }
+}
+
+.team-progress-fill {
+  transform: scaleX(0);
+  will-change: transform, opacity, filter;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--primary-foreground) 12%, transparent),
+    0 0 14px color-mix(in srgb, var(--primary) 38%, transparent);
+  animation: team-progress-accelerate 920ms cubic-bezier(0.12, 0.86, 0.26, 1) both;
+}
+
+.team-progress-shimmer {
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    color-mix(in srgb, white 58%, transparent) 42%,
+    color-mix(in srgb, white 28%, transparent) 52%,
+    transparent 82%
+  );
+  animation: team-progress-shimmer 1.45s ease-out both;
+}

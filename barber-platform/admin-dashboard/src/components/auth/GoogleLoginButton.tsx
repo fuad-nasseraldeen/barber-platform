@@ -3,6 +3,13 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { loadGoogleGsi } from "@/lib/gsi-loader";
 
+// Singleton: GSI initialize() must be called only once per page.
+// We store the latest callback so returning to login page still works.
+let gsiInitialized = false;
+let initNonce = "";
+let currentOnSuccess: (r: GoogleLoginResult) => void = () => {};
+let currentOnError: (e: Error) => void = () => {};
+
 export interface GoogleLoginResult {
   credential: string;
   nonce: string;
@@ -29,7 +36,7 @@ export function GoogleLoginButton({
   const onSuccessRef = useRef(onSuccess);
   const onErrorRef = useRef(onError);
   const nonceRef = useRef<string>("");
-  const initializedRef = useRef(false);
+  const renderedRef = useRef(false);
 
   useEffect(() => {
     onSuccessRef.current = onSuccess;
@@ -50,34 +57,40 @@ export function GoogleLoginButton({
     if (!scriptLoaded || !clientId || typeof window === "undefined") return;
     const g = window.google;
     const id = g?.accounts?.id;
-    if (!id?.initialize) return;
+    if (!id?.initialize || !id?.renderButton) return;
 
-    if (!initializedRef.current) {
-      initializedRef.current = true;
-      const nonce = crypto.randomUUID();
-      nonceRef.current = nonce;
+    // Keep callback refs current (for when user returns to login)
+    currentOnSuccess = (r) => onSuccessRef.current(r);
+    currentOnError = (e) => onErrorRef.current?.(e);
+
+    // Initialize GSI once per app session
+    if (!gsiInitialized) {
+      gsiInitialized = true;
+      initNonce = crypto.randomUUID();
+      nonceRef.current = initNonce;
       id.initialize({
         client_id: clientId,
-        nonce,
+        nonce: initNonce,
         callback: (res: { credential?: string }) => {
           if (!res.credential) {
-            onErrorRef.current?.(new Error("Missing credential"));
+            currentOnError(new Error("Missing credential"));
             return;
           }
-          onSuccessRef.current({ credential: res.credential, nonce: nonceRef.current });
+          currentOnSuccess({ credential: res.credential, nonce: initNonce });
         },
       });
     }
 
     const el = document.getElementById(buttonId);
-    if (el && id.renderButton) {
+    if (el && !renderedRef.current) {
+      renderedRef.current = true;
       el.innerHTML = "";
       id.renderButton(el, {
-          type: "standard",
-          theme: "outline",
-          size: "large",
-          width: 280,
-        });
+        type: "standard",
+        theme: "outline",
+        size: "large",
+        width: 280,
+      });
     }
   }, [scriptLoaded, clientId, buttonId]);
 

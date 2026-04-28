@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api-client";
 import { useAuthStore } from "@/stores/auth-store";
 import { useTranslation } from "@/hooks/use-translation";
-import { Pencil, Clock, DollarSign, Plus, Trash2 } from "lucide-react";
+import { Pencil, Clock, DollarSign, Trash2 } from "lucide-react";
 import toast from "react-hot-toast";
 
 interface StaffServiceItem {
@@ -29,6 +29,8 @@ interface ServiceItem {
   price: number;
   color: string | null;
   isActive: boolean;
+  blockAllStaff?: boolean;
+  blockedStaffIds?: string[];
 }
 
 export default function EmployeeServicesPage() {
@@ -38,9 +40,12 @@ export default function EmployeeServicesPage() {
   const [editing, setEditing] = useState<StaffServiceItem | null>(null);
   const [duration, setDuration] = useState(30);
   const [price, setPrice] = useState(0);
-  const [addingServiceId, setAddingServiceId] = useState<string | null>(null);
+  const [catalogModalOpen, setCatalogModalOpen] = useState(false);
+  const [catalogServiceId, setCatalogServiceId] = useState("");
   const [addDuration, setAddDuration] = useState(30);
   const [addPrice, setAddPrice] = useState(0);
+  const [customName, setCustomName] = useState("");
+  const [showCustomForm, setShowCustomForm] = useState(false);
 
   const { data: staff, isLoading } = useQuery<StaffProfile>({
     queryKey: ["staff", "me"],
@@ -70,14 +75,23 @@ export default function EmployeeServicesPage() {
   });
 
   const addMutation = useMutation({
-    mutationFn: (dto: { serviceId: string; durationMinutes: number; price: number }) =>
+    mutationFn: (dto: {
+      serviceId?: string;
+      newServiceName?: string;
+      durationMinutes: number;
+      price: number;
+    }) =>
       apiClient<StaffProfile>("/staff/me/services", {
         method: "POST",
         body: JSON.stringify(dto),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["staff", "me"] });
-      setAddingServiceId(null);
+      queryClient.invalidateQueries({ queryKey: ["services", businessId] });
+      setCatalogModalOpen(false);
+      setCatalogServiceId("");
+      setShowCustomForm(false);
+      setCustomName("");
       toast.success(t("widget.saved"));
     },
     onError: (e: Error) => toast.error(e.message),
@@ -107,7 +121,22 @@ export default function EmployeeServicesPage() {
   };
 
   const assignedServiceIds = new Set((staff?.staffServices ?? []).map((ss) => ss.service.id));
-  const availableServices = businessServices.filter((s) => s.isActive && !assignedServiceIds.has(s.id));
+  const availableServices = businessServices.filter((s) => {
+    if (!s.isActive || assignedServiceIds.has(s.id)) return false;
+    if (s.blockAllStaff) return false;
+    if (staff?.id && (s.blockedStaffIds ?? []).includes(staff.id)) return false;
+    return true;
+  });
+
+  const catalogKey = availableServices.map((s) => s.id).join(",");
+  useEffect(() => {
+    if (!catalogModalOpen || availableServices.length === 0) return;
+    setCatalogServiceId((prev) =>
+      availableServices.some((s) => s.id === prev)
+        ? prev
+        : availableServices[0].id
+    );
+  }, [catalogModalOpen, catalogKey]);
 
   if (isLoading) {
     return (
@@ -133,8 +162,22 @@ export default function EmployeeServicesPage() {
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold">{t("nav.services")}</h1>
       <p className="text-zinc-600 dark:text-zinc-400">
-        {t("employee.servicesSubtitle")}
+        {t("employee.servicesSubtitleCatalog")}
       </p>
+
+      {availableServices.length > 0 && (
+        <button
+          type="button"
+          onClick={() => {
+            setCatalogModalOpen(true);
+            setAddDuration(30);
+            setAddPrice(0);
+          }}
+          className="btn-primary rounded-lg px-4 py-2 text-sm font-medium"
+        >
+          {t("services.addPersonalService")}
+        </button>
+      )}
 
       {updateMutation.error && (
         <div className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-400">
@@ -234,95 +277,169 @@ export default function EmployeeServicesPage() {
         </div>
       )}
 
-      {availableServices.length > 0 && (
-        <div className="space-y-4">
-          <h2 className="text-lg font-medium">{t("employee.addService")}</h2>
-          <p className="text-sm text-zinc-500">{t("employee.addServiceDesc")}</p>
-          <div className="flex flex-wrap gap-3">
-            {availableServices.map((svc) => (
-              <div
-                key={svc.id}
-                className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-800"
+      <div className="space-y-4 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-800">
+        <h2 className="text-lg font-medium">{t("employee.addCustomService")}</h2>
+        <p className="text-sm text-zinc-500 dark:text-zinc-400">{t("employee.addCustomServiceDesc")}</p>
+        {!showCustomForm ? (
+          <button
+            type="button"
+            onClick={() => setShowCustomForm(true)}
+            className="btn-primary rounded-lg px-4 py-2 text-sm font-medium"
+          >
+            {t("employee.addCustomServiceOpen")}
+          </button>
+        ) : (
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+            <div className="min-w-[12rem] flex-1">
+              <span className="mb-0.5 block text-xs text-zinc-500">{t("services.name")}</span>
+              <input
+                type="text"
+                value={customName}
+                onChange={(e) => setCustomName(e.target.value)}
+                className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-600 dark:bg-zinc-900"
+                placeholder={t("employee.customServiceNamePlaceholder")}
+              />
+            </div>
+            <div>
+              <span className="mb-0.5 block text-xs text-zinc-500">{t("services.duration")}</span>
+              <input
+                type="number"
+                min={1}
+                max={480}
+                value={addDuration}
+                onChange={(e) => setAddDuration(parseInt(e.target.value, 10) || 30)}
+                className="w-24 rounded-lg border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-600 dark:bg-zinc-900"
+              />
+            </div>
+            <div>
+              <span className="mb-0.5 block text-xs text-zinc-500">{t("services.price")}</span>
+              <input
+                type="number"
+                min={0}
+                value={addPrice}
+                onChange={(e) => setAddPrice(parseFloat(e.target.value) || 0)}
+                className="w-28 rounded-lg border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-600 dark:bg-zinc-900"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={addMutation.isPending || !customName.trim()}
+                onClick={() =>
+                  addMutation.mutate({
+                    newServiceName: customName.trim(),
+                    durationMinutes: addDuration,
+                    price: addPrice,
+                  })
+                }
+                className="btn-primary rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50"
               >
-                <div
-                  className="h-10 w-10 shrink-0 rounded-lg"
-                  style={{ backgroundColor: svc.color || "#94a3b8" }}
-                />
+                {t("staff.save")}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCustomForm(false);
+                  setCustomName("");
+                }}
+                className="rounded-lg border border-zinc-300 px-4 py-2 text-sm dark:border-zinc-600"
+              >
+                {t("staff.cancel")}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {catalogModalOpen && (
+        <div className="fixed inset-0 z-[100] flex min-h-[100dvh] items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-6 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+            <h2 className="mb-2 text-lg font-semibold">
+              {t("services.addPersonalModalTitle")}
+            </h2>
+            <p className="mb-4 text-sm text-zinc-500 dark:text-zinc-400">
+              {t("services.addPersonalModalHint")}
+            </p>
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-medium">
+                  {t("services.selectCatalogService")}
+                </label>
+                <select
+                  value={catalogServiceId}
+                  onChange={(e) => setCatalogServiceId(e.target.value)}
+                  className="w-full rounded-lg border border-zinc-300 px-4 py-2 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100"
+                >
+                  {availableServices.map((svc) => (
+                    <option key={svc.id} value={svc.id}>
+                      {svc.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-wrap gap-4">
                 <div>
-                  <p className="font-medium">{svc.name}</p>
-                  {addingServiceId === svc.id ? (
-                    <div className="mt-2 flex flex-wrap items-end gap-2">
-                      <div>
-                        <span className="mb-0.5 block text-xs text-zinc-500">{t("services.duration")}</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={480}
-                          value={addDuration}
-                          onChange={(e) => setAddDuration(parseInt(e.target.value, 10) || 30)}
-                          className="w-20 rounded-lg border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
-                        />
-                      </div>
-                      <div>
-                        <span className="mb-0.5 block text-xs text-zinc-500">{t("services.price")}</span>
-                        <input
-                          type="number"
-                          min={0}
-                          value={addPrice}
-                          onChange={(e) => setAddPrice(parseFloat(e.target.value) || 0)}
-                          className="w-24 rounded-lg border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          addMutation.mutate({
-                            serviceId: svc.id,
-                            durationMinutes: addDuration,
-                            price: addPrice,
-                          });
-                        }}
-                        disabled={addMutation.isPending}
-                        className="btn-primary rounded-lg px-3 py-1 text-sm"
-                      >
-                        {t("staff.save")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setAddingServiceId(null)}
-                        className="rounded-lg border border-zinc-300 px-3 py-1 text-sm dark:border-zinc-600"
-                      >
-                        {t("staff.cancel")}
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAddingServiceId(svc.id);
-                        setAddDuration(svc.durationMinutes);
-                        setAddPrice(Number(svc.price));
-                      }}
-                      className="mt-1 flex items-center gap-1 text-sm text-primary hover:underline"
-                    >
-                      <Plus className="h-4 w-4" />
-                      {t("employee.addWithPrice")}
-                    </button>
-                  )}
+                  <label className="mb-1 block text-sm font-medium">
+                    {t("services.duration")}
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={480}
+                    value={addDuration}
+                    onChange={(e) =>
+                      setAddDuration(parseInt(e.target.value, 10) || 30)
+                    }
+                    className="w-28 rounded-lg border border-zinc-300 px-3 py-2 dark:border-zinc-600 dark:bg-zinc-800"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium">
+                    {t("services.price")}
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={addPrice}
+                    onChange={(e) =>
+                      setAddPrice(parseFloat(e.target.value) || 0)
+                    }
+                    className="w-32 rounded-lg border border-zinc-300 px-3 py-2 dark:border-zinc-600 dark:bg-zinc-800"
+                  />
                 </div>
               </div>
-            ))}
+            </div>
+            <div className="mt-6 flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setCatalogModalOpen(false);
+                  setCatalogServiceId("");
+                }}
+                className="flex-1 rounded-lg border border-zinc-300 px-4 py-2 text-sm font-medium dark:border-zinc-600"
+              >
+                {t("staff.cancel")}
+              </button>
+              <button
+                type="button"
+                disabled={!catalogServiceId || addMutation.isPending}
+                onClick={() =>
+                  addMutation.mutate({
+                    serviceId: catalogServiceId,
+                    durationMinutes: addDuration,
+                    price: addPrice,
+                  })
+                }
+                className="btn-primary flex-1 rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50"
+              >
+                {addMutation.isPending ? t("widget.loading") : t("staff.save")}
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-      {services.length === 0 && availableServices.length === 0 && (
-        <div className="rounded-xl border border-dashed border-zinc-300 p-12 text-center dark:border-zinc-600">
-          <p className="text-zinc-500 dark:text-zinc-400">
-            {t("employee.noServicesAssigned")}
-          </p>
-        </div>
-      )}
     </div>
   );
 }

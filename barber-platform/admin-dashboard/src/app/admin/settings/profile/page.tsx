@@ -23,7 +23,6 @@ export default function ProfileSettingsPage() {
   const user = useAuthStore((s) => s.user);
   const setAuth = useAuthStore((s) => s.setAuth);
   const accessToken = useAuthStore((s) => s.accessToken);
-  const refreshToken = useAuthStore((s) => s.refreshToken);
   const businessId = useAuthStore((s) => s.user?.businessId);
   const profilePhotoRef = useRef<HTMLInputElement>(null);
 
@@ -56,7 +55,7 @@ export default function ProfileSettingsPage() {
       queryClient.invalidateQueries({ queryKey: ["staff", "me"] });
       const newName = `${variables.firstName} ${variables.lastName}`.trim();
       if (newName && user) {
-        setAuth({ ...user, name: newName }, accessToken, refreshToken);
+        setAuth({ ...user, name: newName }, accessToken);
       }
       toast.success(t("widget.saved"));
     },

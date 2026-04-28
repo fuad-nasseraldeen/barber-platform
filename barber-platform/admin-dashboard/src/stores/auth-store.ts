@@ -16,15 +16,14 @@ export interface User {
 
 interface AuthState {
   user: User | null;
+  /** Short-lived JWT — memory + zustand only (not persisted). Refresh via HttpOnly cookie. */
   accessToken: string | null;
-  refreshToken: string | null;
   _hasHydrated: boolean;
-  setAuth: (
-    user: User | null,
-    accessToken: string | null,
-    refreshToken?: string | null
-  ) => void;
-  logout: () => void;
+  setAuth: (user: User | null, accessToken: string | null) => void;
+  /** Clear user + access token locally only (no network). Used when refresh fails so UI never hangs. */
+  clearSession: () => void;
+  /** Revoke refresh on server + clear HttpOnly cookie + client state. */
+  logout: () => Promise<void>;
   isAdmin: () => boolean;
   isStaff: () => boolean;
 }
@@ -34,31 +33,23 @@ export const useAuthStore = create<AuthState>()(
     (set, get) => ({
       user: null,
       accessToken: null,
-      refreshToken: null,
       _hasHydrated: false,
-      setAuth: (user, accessToken, refreshToken = null) => {
-        if (typeof window !== "undefined") {
-          if (accessToken) localStorage.setItem("access_token", accessToken);
-          else localStorage.removeItem("access_token");
-          if (refreshToken) localStorage.setItem("refresh_token", refreshToken);
-          else localStorage.removeItem("refresh_token");
-        }
-        set({ user, accessToken, refreshToken });
+      setAuth: (user, accessToken) => {
+        set({ user, accessToken });
       },
-      logout: () => {
-        const refreshToken = get().refreshToken;
+      clearSession: () => {
+        set({ user: null, accessToken: null });
+      },
+      logout: async () => {
         if (typeof window !== "undefined") {
-          if (refreshToken) {
-            fetch(`${getApiBase()}/auth/logout`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ refreshToken }),
-            }).catch(() => {});
-          }
-          localStorage.removeItem("access_token");
-          localStorage.removeItem("refresh_token");
+          await fetch(`${getApiBase()}/auth/logout`, {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          }).catch(() => {});
         }
-        set({ user: null, accessToken: null, refreshToken: null });
+        set({ user: null, accessToken: null });
       },
       isAdmin: () => {
         const role = get().user?.role;
@@ -71,7 +62,7 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: "auth-storage",
-      partialize: (s) => ({ user: s.user, accessToken: s.accessToken, refreshToken: s.refreshToken }),
+      partialize: (s) => ({ user: s.user }),
       onRehydrateStorage: () => () => {
         useAuthStore.setState({ _hasHydrated: true });
       },

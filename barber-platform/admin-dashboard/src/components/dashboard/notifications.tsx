@@ -5,7 +5,6 @@ import { Bell, Calendar, Plane, UserPlus, Users } from "lucide-react";
 import { useNotificationStore } from "@/stores/notification-store";
 import { useLocaleStore } from "@/stores/locale-store";
 import { useTranslation } from "@/hooks/use-translation";
-import Link from "next/link";
 
 function getNotificationDisplay(n: { type: string; title: string; body?: string; data?: Record<string, unknown> }, t: (k: string) => string) {
   if (n.type === "vacation_requested") {
@@ -133,17 +132,6 @@ export function Notifications() {
               </ul>
             )}
           </div>
-          {notifications.length > 0 && (
-            <div className="border-t border-zinc-200 px-4 py-2 dark:border-zinc-700">
-              <Link
-                href="/admin/notifications"
-                onClick={() => setOpen(false)}
-                className="block rounded-lg py-2 text-center text-sm font-medium text-indigo-600 transition-all duration-300 hover:bg-indigo-50 dark:text-indigo-400 dark:hover:bg-indigo-500/10"
-              >
-                {t("topbar.viewAllNotifications")}
-              </Link>
-            </div>
-          )}
         </div>
       )}
     </div>

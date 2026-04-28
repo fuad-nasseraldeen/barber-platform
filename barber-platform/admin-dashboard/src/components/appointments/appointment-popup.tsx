@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect } from "react";
+import { DateTime } from "luxon";
+import { parseAppointmentApiInstant } from "@/lib/appointment-calendar-time";
 import { StaffAvatar } from "@/components/ui/staff-avatar";
 import {
   Phone,
@@ -43,21 +45,27 @@ type AppointmentPopupProps = {
   onChangeDuration?: () => void;
   t: (key: string) => string;
   locale?: string;
+  /** Business wall clock (IANA). If omitted, uses the browser timezone for display. */
+  businessTimeZone?: string;
 };
 
-function formatTime(s: string) {
-  return s.slice(11, 16);
+function displayZone(businessTimeZone?: string) {
+  return (
+    businessTimeZone?.trim() ||
+    (typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "UTC")
+  );
 }
 
-function formatDate(s: string, locale: string) {
-  const d = new Date(s);
-  return d.toLocaleDateString(locale, {
-    day: "2-digit",
-    month: "2-digit",
-    year: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+function formatTime(s: string, businessTimeZone?: string) {
+  const dt = parseAppointmentApiInstant(s);
+  if (!dt.isValid) return s.length >= 16 ? s.slice(11, 16) : "—";
+  return dt.setZone(displayZone(businessTimeZone)).toFormat("HH:mm");
+}
+
+function formatBookedAt(s: string, locale: string, businessTimeZone?: string) {
+  const dt = parseAppointmentApiInstant(s);
+  if (!dt.isValid) return "";
+  return dt.setZone(displayZone(businessTimeZone)).setLocale(locale).toLocaleString(DateTime.DATETIME_SHORT);
 }
 
 export function AppointmentPopup({
@@ -69,6 +77,7 @@ export function AppointmentPopup({
   onChangeDuration,
   t,
   locale = "he",
+  businessTimeZone,
 }: AppointmentPopupProps) {
   const customerName = [appointment.customer.firstName, appointment.customer.lastName]
     .filter(Boolean)
@@ -125,7 +134,8 @@ export function AppointmentPopup({
                 {formatTime(appointment.startTime)} – {formatTime(appointment.endTime)} {appointment.service.name}
               </p>
               <p className="mt-1 text-xs text-zinc-400">
-                {t("appointments.popupBookedAt")} {formatDate(appointment.startTime, locale)}
+                {t("appointments.popupBookedAt")}{" "}
+                {formatBookedAt(appointment.startTime, locale, businessTimeZone)}
               </p>
               {appointment.staff && (
                 <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">

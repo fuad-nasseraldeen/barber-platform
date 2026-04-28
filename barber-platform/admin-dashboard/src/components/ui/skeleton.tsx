@@ -131,3 +131,65 @@ export function TableSkeleton({ rows = 5 }: { rows?: number }) {
     </div>
   );
 }
+
+export function DashboardKpiCardSkeleton() {
+  return (
+    <div className="min-h-[212px] rounded-3xl border border-zinc-200 bg-white/80 p-4 dark:border-zinc-800 dark:bg-zinc-900/70 sm:p-5">
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div className="space-y-2">
+          <Skeleton primary className="h-3 w-28 rounded" />
+          <Skeleton primary className="h-10 w-24 rounded" />
+        </div>
+        <Skeleton primary className="h-11 w-11 rounded-full" />
+      </div>
+      <div className="rounded-2xl bg-zinc-100/60 px-2 pt-2 pb-1 dark:bg-zinc-800/40">
+        <Skeleton primary className="h-20 w-full rounded-xl" />
+      </div>
+      <div className="mt-3 flex items-center justify-between">
+        <Skeleton primary className="h-6 w-20 rounded-full" />
+        <Skeleton primary className="h-4 w-24 rounded" />
+      </div>
+    </div>
+  );
+}
+
+export function TeamGoalsCardSkeleton({ rows = 4 }: { rows?: number }) {
+  return (
+    <div className="min-h-[280px] rounded-3xl border border-zinc-200 bg-white/80 p-4 dark:border-zinc-800 dark:bg-zinc-900/70 sm:p-5">
+      <div className="mb-4 flex items-center justify-between">
+        <Skeleton primary className="h-4 w-36 rounded" />
+        <Skeleton primary className="h-4 w-24 rounded" />
+      </div>
+      <div className="space-y-3">
+        {Array.from({ length: rows }).map((_, i) => (
+          <div key={i} className="space-y-2 border-b border-zinc-100 pb-3 dark:border-zinc-800">
+            <div className="flex items-center gap-2">
+              <Skeleton primary className="h-8 w-8 rounded-full" />
+              <Skeleton primary className="h-4 w-32 rounded" />
+            </div>
+            <Skeleton primary className="h-2.5 w-full rounded-full" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function DashboardPanelSkeleton({ rows = 4 }: { rows?: number }) {
+  return (
+    <div className="rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-800">
+      <Skeleton primary className="mb-4 h-6 w-40 rounded" />
+      <div className="space-y-3">
+        {Array.from({ length: rows }).map((_, i) => (
+          <div key={i} className="flex items-center justify-between rounded-lg border border-zinc-100 p-3 dark:border-zinc-700">
+            <div className="space-y-2">
+              <Skeleton primary className="h-4 w-32 rounded" />
+              <Skeleton primary className="h-3 w-24 rounded" />
+            </div>
+            <Skeleton primary className="h-5 w-16 rounded" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

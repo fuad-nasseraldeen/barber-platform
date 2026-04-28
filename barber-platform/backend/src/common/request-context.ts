@@ -16,6 +16,7 @@ export interface PrismaQueryEventRecord {
 
 export interface RequestContext {
   requestId: string;
+  requestStartMs?: number;
   tenantId?: string; // businessId
   userId?: string;
   endpoint?: string;
@@ -27,6 +28,20 @@ export interface RequestContext {
   prismaQueryEvents?: PrismaQueryEventRecord[];
   /** Count of Redis/cache operations observed through CacheService for this request. */
   redisCallCount?: number;
+  appointmentCreateTrace?: {
+    enabled: boolean;
+    currentPhase?: string;
+    insideTransaction: boolean;
+    txCumulativeMs: number;
+    entries: Array<{
+      phaseName: string;
+      model: string;
+      action: string;
+      durationMs: number;
+      cumulativeTxMs: number;
+      insideTransaction: boolean;
+    }>;
+  };
 }
 
 const asyncLocalStorage = new AsyncLocalStorage<RequestContext>();
@@ -130,4 +145,67 @@ export function addRedisCallCount(count = 1): void {
 
 export function getRedisCallCount(): number {
   return getRequestContext()?.redisCallCount ?? 0;
+}
+
+export function startAppointmentCreateTrace(): void {
+  const ctx = getRequestContext();
+  if (!ctx) return;
+  ctx.appointmentCreateTrace = {
+    enabled: true,
+    currentPhase: 'init',
+    insideTransaction: false,
+    txCumulativeMs: 0,
+    entries: [],
+  };
+}
+
+export function stopAppointmentCreateTrace(): void {
+  const ctx = getRequestContext();
+  if (!ctx?.appointmentCreateTrace) return;
+  ctx.appointmentCreateTrace.enabled = false;
+}
+
+export function setAppointmentCreateTracePhase(phaseName: string): void {
+  const ctx = getRequestContext();
+  if (!ctx?.appointmentCreateTrace) return;
+  ctx.appointmentCreateTrace.currentPhase = phaseName;
+}
+
+export function setAppointmentCreateTraceInsideTransaction(insideTransaction: boolean): void {
+  const ctx = getRequestContext();
+  if (!ctx?.appointmentCreateTrace) return;
+  ctx.appointmentCreateTrace.insideTransaction = insideTransaction;
+}
+
+export function addAppointmentCreateTraceQuery(
+  model: string | undefined,
+  action: string,
+  durationMs: number,
+): void {
+  const ctx = getRequestContext();
+  const trace = ctx?.appointmentCreateTrace;
+  if (!trace?.enabled || !Number.isFinite(durationMs)) return;
+  const rounded = Math.max(0, Math.round(durationMs));
+  if (trace.insideTransaction) {
+    trace.txCumulativeMs += rounded;
+  }
+  trace.entries.push({
+    phaseName: trace.currentPhase ?? 'unknown',
+    model: model ?? 'raw',
+    action,
+    durationMs: rounded,
+    cumulativeTxMs: trace.txCumulativeMs,
+    insideTransaction: trace.insideTransaction,
+  });
+}
+
+export function getAppointmentCreateTraceEntries(): Array<{
+  phaseName: string;
+  model: string;
+  action: string;
+  durationMs: number;
+  cumulativeTxMs: number;
+  insideTransaction: boolean;
+}> {
+  return getRequestContext()?.appointmentCreateTrace?.entries ?? [];
 }

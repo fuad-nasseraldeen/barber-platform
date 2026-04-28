@@ -9,7 +9,6 @@ import { useAuthStore } from "@/stores/auth-store";
 export function useEmployeeStaffId(): string | null {
   const user = useAuthStore((s) => s.user);
   const accessToken = useAuthStore((s) => s.accessToken);
-  const refreshToken = useAuthStore((s) => s.refreshToken);
   const setAuth = useAuthStore((s) => s.setAuth);
 
   const { data: staff } = useQuery({
@@ -20,9 +19,9 @@ export function useEmployeeStaffId(): string | null {
 
   useEffect(() => {
     if (staff?.id && user && !user.staffId) {
-      setAuth({ ...user, staffId: staff.id }, accessToken, refreshToken);
+      setAuth({ ...user, staffId: staff.id }, accessToken);
     }
-  }, [staff?.id, user, accessToken, refreshToken, setAuth]);
+  }, [staff?.id, user, accessToken, setAuth]);
 
   return user?.staffId ?? staff?.id ?? null;
 }

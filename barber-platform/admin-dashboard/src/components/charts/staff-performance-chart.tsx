@@ -36,7 +36,7 @@ export function StaffPerformanceChart({ data }: StaffPerformanceChartProps) {
     <div className="rounded-xl border border-zinc-200 bg-white p-6 shadow-md transition-all duration-300 ease-in-out hover:scale-[1.01] hover:shadow-xl dark:border-zinc-700/80 dark:bg-zinc-900/50">
       <h2 className="mb-4 font-semibold">Staff Performance</h2>
       {chartData.length ? (
-        <div className="h-56">
+        <div className="h-56 min-h-[224px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart
               data={chartData}

@@ -16,6 +16,19 @@ function phoneDigits(phone: string): string {
   return phone.replace(/\D/g, '');
 }
 
+type NoShowRiskLevel = 'LOW' | 'MEDIUM' | 'HIGH';
+
+type CustomerWithNoShowRisk = {
+  id: string;
+  noShowRisk: {
+    score: number;
+    level: NoShowRiskLevel;
+    flagged: boolean;
+    noShowCount: number;
+    totalAppointments: number;
+  };
+};
+
 /** Compare two phone strings as the same subscriber (IL 050 vs 97250…). */
 function phonesEquivalent(a: string, b: string): boolean {
   const da = phoneDigits(a);
@@ -53,6 +66,117 @@ export class CustomersService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationService,
   ) {}
+
+  private calculateNoShowRisk(
+    totalAppointments: number,
+    noShowCount: number,
+    recentAppointments: number,
+    recentNoShows: number,
+  ) {
+    if (totalAppointments <= 0) {
+      return {
+        score: 0,
+        level: 'LOW' as NoShowRiskLevel,
+        flagged: false,
+        noShowCount: 0,
+        totalAppointments: 0,
+      };
+    }
+
+    const noShowRate = noShowCount / totalAppointments;
+    const recentNoShowRate =
+      recentAppointments > 0 ? recentNoShows / recentAppointments : 0;
+    const score = Math.min(
+      100,
+      Math.round(
+        noShowRate * 60 + recentNoShowRate * 30 + Math.min(recentNoShows, 3) * 10,
+      ),
+    );
+    const level: NoShowRiskLevel =
+      score >= 60 ? 'HIGH' : score >= 35 ? 'MEDIUM' : 'LOW';
+
+    return {
+      score,
+      level,
+      flagged: level !== 'LOW',
+      noShowCount,
+      totalAppointments,
+    };
+  }
+
+  private async attachNoShowRisk<T extends { id: string }>(
+    customers: T[],
+    businessId: string,
+  ): Promise<Array<T & CustomerWithNoShowRisk>> {
+    if (!customers.length) return [] as Array<T & CustomerWithNoShowRisk>;
+
+    const customerIds = customers.map((c) => c.id);
+    const recentStart = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+
+    const [totalByCustomer, noShowByCustomer, recentByCustomer, recentNoShowByCustomer] =
+      await Promise.all([
+        this.prisma.appointment.groupBy({
+          by: ['customerId'],
+          where: {
+            businessId,
+            customerId: { in: customerIds },
+          },
+          _count: { _all: true },
+        }),
+        this.prisma.appointment.groupBy({
+          by: ['customerId'],
+          where: {
+            businessId,
+            customerId: { in: customerIds },
+            status: 'NO_SHOW',
+          },
+          _count: { _all: true },
+        }),
+        this.prisma.appointment.groupBy({
+          by: ['customerId'],
+          where: {
+            businessId,
+            customerId: { in: customerIds },
+            startTime: { gte: recentStart },
+          },
+          _count: { _all: true },
+        }),
+        this.prisma.appointment.groupBy({
+          by: ['customerId'],
+          where: {
+            businessId,
+            customerId: { in: customerIds },
+            startTime: { gte: recentStart },
+            status: 'NO_SHOW',
+          },
+          _count: { _all: true },
+        }),
+      ]);
+
+    const totalMap = new Map(totalByCustomer.map((r) => [r.customerId, r._count._all]));
+    const noShowMap = new Map(noShowByCustomer.map((r) => [r.customerId, r._count._all]));
+    const recentMap = new Map(recentByCustomer.map((r) => [r.customerId, r._count._all]));
+    const recentNoShowMap = new Map(
+      recentNoShowByCustomer.map((r) => [r.customerId, r._count._all]),
+    );
+
+    return customers.map((customer) => {
+      const totalAppointments = totalMap.get(customer.id) ?? 0;
+      const noShowCount = noShowMap.get(customer.id) ?? 0;
+      const recentAppointments = recentMap.get(customer.id) ?? 0;
+      const recentNoShows = recentNoShowMap.get(customer.id) ?? 0;
+
+      return {
+        ...customer,
+        noShowRisk: this.calculateNoShowRisk(
+          totalAppointments,
+          noShowCount,
+          recentAppointments,
+          recentNoShows,
+        ),
+      };
+    });
+  }
 
   private async findCustomerWithSamePhone(
     businessId: string,
@@ -153,13 +277,15 @@ export class CustomersService {
       ];
     }
 
-    return this.prisma.customer.findMany({
+    const customers = await this.prisma.customer.findMany({
       where,
       include: {
         branch: { select: { id: true, name: true } },
       },
       orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
     });
+
+    return this.attachNoShowRisk(customers, businessId);
   }
 
   async findById(id: string, businessId: string) {
@@ -172,7 +298,8 @@ export class CustomersService {
     if (!customer) {
       throw new NotFoundException('Customer not found');
     }
-    return customer;
+    const [withRisk] = await this.attachNoShowRisk([customer], businessId);
+    return withRisk;
   }
 
   async update(id: string, businessId: string, dto: UpdateCustomerDto) {

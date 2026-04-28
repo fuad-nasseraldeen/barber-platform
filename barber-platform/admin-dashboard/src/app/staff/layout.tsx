@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Sidebar } from "@/components/ui/sidebar";
 import { LocaleSwitcher } from "@/components/ui/locale-switcher";
 import { BranchSelector } from "@/components/ui/branch-selector";
+import { PageTransition } from "@/components/ui/page-transition";
 import { useAuthStore } from "@/stores/auth-store";
 import Link from "next/link";
 
@@ -48,7 +49,9 @@ export default function StaffLayout({
             <LocaleSwitcher />
           </div>
         </header>
-        <main className="flex-1 overflow-auto p-6">{children}</main>
+        <main className="flex-1 overflow-auto p-6">
+          <PageTransition>{children}</PageTransition>
+        </main>
       </div>
     </div>
   );

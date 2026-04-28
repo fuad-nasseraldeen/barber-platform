@@ -13,6 +13,7 @@ export function QueryProvider({ children }: { children: React.ReactNode }) {
             gcTime: 30 * 60 * 1000,
             refetchOnWindowFocus: false,
             refetchOnReconnect: true,
+            placeholderData: (previousData: unknown) => previousData,
           },
         },
       })

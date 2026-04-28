@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api-client";
 import { useAuthStore } from "@/stores/auth-store";
-import { useBranchStore } from "@/stores/branch-store";
+import { useEffectiveBranchId } from "@/hooks/use-effective-branch-id";
 import { useTranslation } from "@/hooks/use-translation";
 import { Users } from "lucide-react";
 import { StaffAvatar } from "@/components/ui/staff-avatar";
@@ -20,7 +20,7 @@ type StaffMember = {
 export default function EmployeeTeamPage() {
   const t = useTranslation();
   const businessId = useAuthStore((s) => s.user?.businessId);
-  const selectedBranchId = useBranchStore((s) => s.selectedBranchId);
+  const selectedBranchId = useEffectiveBranchId(businessId);
 
   const params = new URLSearchParams({ businessId: businessId || "" });
   if (selectedBranchId) params.set("branchId", selectedBranchId);

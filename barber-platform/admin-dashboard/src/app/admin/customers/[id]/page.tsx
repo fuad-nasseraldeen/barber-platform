@@ -20,6 +20,13 @@ type Customer = {
   tagColor: string | null;
   notes: string | null;
   branch?: { id: string; name: string } | null;
+  noShowRisk?: {
+    score: number;
+    level: "LOW" | "MEDIUM" | "HIGH";
+    flagged: boolean;
+    noShowCount: number;
+    totalAppointments: number;
+  };
 };
 
 type CustomerVisit = {
@@ -113,7 +120,10 @@ export default function CustomerProfilePage() {
     );
   }
 
-  const customerName = [customer.firstName, customer.lastName].filter(Boolean).join(" ") || customer.email;
+  const customerName =
+    [customer.firstName, customer.lastName].filter(Boolean).join(" ") || customer.phone || "—";
+  const isNoShowFlagged = customer.noShowRisk?.flagged;
+  const isHighRisk = customer.noShowRisk?.level === "HIGH";
 
   return (
     <div>
@@ -132,7 +142,20 @@ export default function CustomerProfilePage() {
         />
         <div>
           <h1 className="text-2xl font-semibold">{customerName}</h1>
-          <p className="text-zinc-600 dark:text-zinc-400">{customer.email}</p>
+          {isNoShowFlagged ? (
+            <p
+              className={`mt-1 inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs font-medium ${
+                isHighRisk
+                  ? "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300"
+                  : "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300"
+              }`}
+            >
+              <span
+                className={`h-2 w-2 rounded-full ${isHighRisk ? "bg-red-600" : "bg-amber-500"}`}
+              />
+              No-Show Risk {customer.noShowRisk?.score ?? 0}%
+            </p>
+          ) : null}
           {customer.phone && (
             <p className="text-sm text-zinc-500">{customer.phone}</p>
           )}

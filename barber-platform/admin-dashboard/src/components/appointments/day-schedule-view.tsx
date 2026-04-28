@@ -1,8 +1,11 @@
 "use client";
 
 import { useRef, useEffect, useCallback } from "react";
+import { DateTime } from "luxon";
+import { parseAppointmentApiInstant } from "@/lib/appointment-calendar-time";
 import { StaffAvatar } from "@/components/ui/staff-avatar";
 import { Plane, ArrowUpToLine } from "lucide-react";
+import { wallClockMs } from "@/lib/time";
 
 const SLOT_HEIGHT = 48;
 const START_HOUR = 8;
@@ -10,12 +13,12 @@ const END_HOUR = 22;
 const SLOTS_PER_HOUR = 2;
 const TOTAL_SLOTS = (END_HOUR - START_HOUR) * SLOTS_PER_HOUR;
 
-function formatDate(d: Date) {
-  return d.toISOString().slice(0, 10);
+function formatDateInZone(d: Date, zone: string) {
+  return DateTime.fromJSDate(d).setZone(zone).toISODate() ?? "";
 }
 
-function formatTime(s: string) {
-  return s.slice(11, 16);
+function formatTimeIso(s: string, zone: string) {
+  return parseAppointmentApiInstant(s).setZone(zone).toFormat("HH:mm");
 }
 
 function minutesFromStart(hour: number, minute: number): number {
@@ -68,6 +71,8 @@ export type DayScheduleProps = {
   locale?: string;
   /** Called when user clicks an appointment block */
   onAppointmentClick?: (apt: DayScheduleAppointment) => void;
+  /** Business IANA zone for layout + “now” line (defaults to browser zone). */
+  businessTimezone?: string;
 };
 
 export function DayScheduleView({
@@ -84,18 +89,24 @@ export function DayScheduleView({
   daySelectorDays = 5,
   locale = "he",
   onAppointmentClick,
+  businessTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone,
 }: DayScheduleProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastScrollTimeRef = useRef(0);
+  const zone = businessTimezone;
 
-  const isToday = (d: Date) => d.toDateString() === new Date().toDateString();
+  const isToday = (d: Date) => {
+    const a = DateTime.fromJSDate(d).setZone(zone).toISODate();
+    const b = DateTime.now().setZone(zone).toISODate();
+    return a === b;
+  };
   const selectedIsToday = isToday(date);
 
   const currentTimeTop = (() => {
     if (!selectedIsToday) return null;
-    const now = new Date();
-    return topFromTime(now.getHours(), now.getMinutes());
+    const now = DateTime.now().setZone(zone);
+    return topFromTime(now.hour, now.minute);
   })();
 
   const scrollToCurrentTime = useCallback(() => {
@@ -118,7 +129,7 @@ export function DayScheduleView({
   }, [selectedIsToday, scrollToCurrentTime, date]);
 
   const handleScroll = useCallback(() => {
-    lastScrollTimeRef.current = Date.now();
+    lastScrollTimeRef.current = wallClockMs();
     if (scrollTimeoutRef.current) {
       clearTimeout(scrollTimeoutRef.current);
       scrollTimeoutRef.current = null;
@@ -128,17 +139,20 @@ export function DayScheduleView({
     }, 5000);
   }, [scrollToCurrentTime]);
 
-  const dateStr = formatDate(date);
-  const dayAppointments = appointments.filter((a) => a.startTime.startsWith(dateStr));
-  const dayBreaks = breaks.filter((b) =>
-    String(b.startTime).slice(0, 10) === dateStr
-  );
-
-  const days = Array.from({ length: daySelectorDays }, (_, i) => {
-    const d = new Date();
-    d.setDate(d.getDate() + i);
-    return d;
+  const dateStr = formatDateInZone(date, zone);
+  const dayAppointments = appointments.filter((a) => {
+    const ymd = parseAppointmentApiInstant(a.startTime).setZone(zone).toISODate();
+    return ymd === dateStr;
   });
+  const dayBreaks = breaks.filter((b) => {
+    const ymd = parseAppointmentApiInstant(String(b.startTime)).setZone(zone).toISODate();
+    return ymd === dateStr;
+  });
+
+  const todayStart = DateTime.now().setZone(zone).startOf("day");
+  const days = Array.from({ length: daySelectorDays }, (_, i) =>
+    todayStart.plus({ days: i }).toJSDate(),
+  );
 
   const dayLabels: Record<number, string> = {
     0: locale === "he" ? "היום" : locale === "ar" ? "اليوم" : "Today",
@@ -154,11 +168,13 @@ export function DayScheduleView({
           </span>
           <div className="flex gap-2 overflow-x-auto pb-1">
             {days.map((d, i) => {
-              const selected = formatDate(d) === dateStr;
-              const label = dayLabels[i] ?? d.toLocaleDateString(locale, { weekday: "short" });
+              const selected = formatDateInZone(d, zone) === dateStr;
+              const label =
+                dayLabels[i] ??
+                DateTime.fromJSDate(d).setZone(zone).setLocale(locale).toFormat("ccc");
               return (
                 <button
-                  key={formatDate(d)}
+                  key={formatDateInZone(d, zone)}
                   type="button"
                   onClick={() => onDateSelect(d)}
                   className={`flex shrink-0 flex-col items-center gap-1 rounded-2xl px-4 py-3 transition-all duration-200 ${
@@ -167,7 +183,9 @@ export function DayScheduleView({
                       : "border border-zinc-200 bg-white hover:border-zinc-300 dark:border-zinc-600 dark:bg-zinc-800 dark:hover:border-zinc-500"
                   }`}
                 >
-                  <span className="text-lg font-bold tabular-nums">{d.getDate()}</span>
+                  <span className="text-lg font-bold tabular-nums">
+                    {DateTime.fromJSDate(d).setZone(zone).day}
+                  </span>
                   <span className="text-xs font-medium opacity-90">{label}</span>
                 </button>
               );
@@ -233,11 +251,10 @@ export function DayScheduleView({
 
             {/* Breaks - gray block with diagonal stripes */}
             {dayBreaks.map((br) => {
-              const start = new Date(br.startTime);
-              const end = new Date(br.endTime);
-              const durationMs = end.getTime() - start.getTime();
-              const durationMin = Math.round(durationMs / 60000);
-              const top = topFromTime(start.getHours(), start.getMinutes());
+              const start = parseAppointmentApiInstant(br.startTime).setZone(zone);
+              const end = parseAppointmentApiInstant(br.endTime).setZone(zone);
+              const durationMin = Math.max(0, Math.round(end.diff(start, "minutes").minutes));
+              const top = topFromTime(start.hour, start.minute);
               const height = heightFromDuration(durationMin);
               return (
                 <div
@@ -259,7 +276,7 @@ export function DayScheduleView({
                     {locale === "he" ? "הפסקה" : locale === "ar" ? "استراحة" : "Break"}
                   </span>
                   <span className="mr-2 text-xs text-zinc-500 tabular-nums">
-                    {formatTime(br.startTime)} – {formatTime(br.endTime)}
+                    {formatTimeIso(br.startTime, zone)} – {formatTimeIso(br.endTime, zone)}
                   </span>
                 </div>
               );
@@ -304,11 +321,10 @@ export function DayScheduleView({
 
             {/* Appointments */}
             {dayAppointments.map((apt) => {
-              const start = new Date(apt.startTime);
-              const end = new Date(apt.endTime);
-              const durationMs = end.getTime() - start.getTime();
-              const durationMin = Math.round(durationMs / 60000);
-              const top = topFromTime(start.getHours(), start.getMinutes());
+              const start = parseAppointmentApiInstant(apt.startTime).setZone(zone);
+              const end = parseAppointmentApiInstant(apt.endTime).setZone(zone);
+              const durationMin = Math.max(0, Math.round(end.diff(start, "minutes").minutes));
+              const top = topFromTime(start.hour, start.minute);
               const height = heightFromDuration(durationMin);
               const colorClass = getAppointmentColor ? getAppointmentColor(apt) : staffColor(apt.staff?.id);
               const staffAvatar = apt.staff ? staffAvatarMap.get(apt.staff.id) : null;
@@ -330,7 +346,7 @@ export function DayScheduleView({
                   />
                   <div className="min-w-0 flex-1 overflow-hidden text-right">
                     <p className="mt-0.5 text-xs tabular-nums opacity-90">
-                      {formatTime(apt.startTime)} – {formatTime(apt.endTime)}
+                      {formatTimeIso(apt.startTime, zone)} – {formatTimeIso(apt.endTime, zone)}
                     </p>
                     <p className="truncate font-semibold">{customerName(apt.customer)}</p>
                     <p className="truncate text-xs opacity-90">

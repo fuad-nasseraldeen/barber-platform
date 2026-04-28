@@ -68,7 +68,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const { data: customers = [] } = useQuery({
     queryKey: ["command-customers", businessId, query],
     queryFn: () =>
-      apiClient<{ id: string; firstName?: string; lastName?: string; email: string }[]>(
+      apiClient<{ id: string; firstName?: string; lastName?: string; email?: string; phone?: string | null }[]>(
         `/customers?businessId=${businessId}&search=${encodeURIComponent(query)}`
       ).then((list) => list.slice(0, 5)),
     enabled: open && !!businessId && query.length >= 2,
@@ -105,11 +105,11 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
 
   const customerActions: Action[] = customers.map((c) => ({
     type: "customer" as const,
-    label: [c.firstName, c.lastName].filter(Boolean).join(" ") || c.email,
+    label: [c.firstName, c.lastName].filter(Boolean).join(" ") || c.phone || c.email || "—",
     id: c.id,
     href: `/admin/customers/${c.id}`,
     icon: <Users className="h-4 w-4" />,
-    subtitle: c.email,
+    subtitle: c.phone || c.email || undefined,
   }));
 
   const staffActions: Action[] = canAccessStaff

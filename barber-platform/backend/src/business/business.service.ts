@@ -19,6 +19,15 @@ import { StaffService } from '../staff/staff.service';
 
 const INVITE_EXPIRY_DAYS = 7;
 
+const DEFAULT_GENERAL_SETTINGS: Record<string, boolean> = {
+  enableQuickBookingPage: false,
+  enableChat: false,
+  enableWaitlistNotifications: false,
+  hideOldUpdates: false,
+  allowVacationInAppointmentPage: false,
+  hidePopupAlerts: false,
+};
+
 @Injectable()
 export class BusinessService {
   constructor(
@@ -53,6 +62,9 @@ export class BusinessService {
         timezone: dto.timezone ?? 'Asia/Jerusalem',
         locale: dto.locale ?? 'he',
         currency: dto.currency ?? 'USD',
+        settings: {
+          generalSettings: DEFAULT_GENERAL_SETTINGS,
+        },
       },
     });
 
@@ -200,7 +212,22 @@ export class BusinessService {
     if (dto.requireEmployeeVacationApproval !== undefined) data.requireEmployeeVacationApproval = dto.requireEmployeeVacationApproval;
     if (dto.settings !== undefined) {
       const current = (business as { settings?: object }).settings ?? {};
-      data.settings = { ...(typeof current === 'object' && current !== null ? current : {}), ...dto.settings };
+      const currentSettings =
+        typeof current === 'object' && current !== null
+          ? (current as Record<string, unknown>)
+          : {};
+      const requestedSettings = dto.settings as Record<string, unknown>;
+      const requestedGeneralSettings =
+        (requestedSettings.generalSettings as Record<string, boolean> | undefined) ?? {};
+      data.settings = {
+        ...currentSettings,
+        ...requestedSettings,
+        generalSettings: {
+          ...DEFAULT_GENERAL_SETTINGS,
+          ...((currentSettings.generalSettings as Record<string, boolean> | undefined) ?? {}),
+          ...requestedGeneralSettings,
+        },
+      };
     }
     const updated = await this.prisma.business.update({
       where: { id },

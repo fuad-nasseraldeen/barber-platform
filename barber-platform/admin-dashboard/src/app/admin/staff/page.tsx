@@ -1,11 +1,13 @@
 "use client";
 
-import { useState, useRef } from "react";
+import Link from "next/link";
+import { useState, useRef, useMemo, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient, apiUpload } from "@/lib/api-client";
 import { useAuthStore } from "@/stores/auth-store";
 import { useTranslation } from "@/hooks/use-translation";
-import { useBranchStore } from "@/stores/branch-store";
+import { useEffectiveBranchId } from "@/hooks/use-effective-branch-id";
 import { useLocaleStore } from "@/stores/locale-store";
 import { translateApiError } from "@/lib/i18n";
 import toast from "react-hot-toast";
@@ -22,6 +24,12 @@ import {
   Scissors,
 } from "lucide-react";
 import { StaffAvatar } from "@/components/ui/staff-avatar";
+import { BirthDateTripleInput } from "@/components/ui/birth-date-triple-input";
+import { GenderToggle, type GenderToggleValue } from "@/components/ui/gender-toggle";
+import { StaffWeeklyHoursPanel } from "@/components/staff/StaffWeeklyHoursPanel";
+import { EmployeePerformanceDashboard } from "@/components/staff/profile/employee-performance-dashboard";
+import { formatYmdLocal, addDaysLocal } from "@/lib/local-ymd";
+import { formatLongWeekdayDateYmd } from "@/lib/locale-display";
 
 const DAYS = [
   { d: 0, key: "staff.days.sun" },
@@ -33,12 +41,79 @@ const DAYS = [
   { d: 6, key: "staff.days.sat" },
 ];
 
+/** Matches backend default schedule for new staff (Mon–Fri). */
+const DEFAULT_WORKING_HOURS: Record<number, { start: string; end: string }> = {
+  1: { start: "09:00", end: "18:00" },
+  2: { start: "09:00", end: "18:00" },
+  3: { start: "09:00", end: "18:00" },
+  4: { start: "09:00", end: "18:00" },
+  5: { start: "09:00", end: "18:00" },
+};
+
 export interface StaffServiceItem {
   id: string;
   durationMinutes: number;
   price: number;
   service: { id: string; name: string };
 }
+
+/** תגובת GET /staff/schedule-snapshot — לדיבוג קונסול בדף צוות */
+export interface StaffScheduleSnapshot {
+  generatedAt: string;
+  businessId: string;
+  branchId: string | null;
+  anchorFirstWeekdayYmd: string;
+  daysComputed: number;
+  staffCount: number;
+  staff: Array<{
+    id: string;
+    firstName: string;
+    lastName: string;
+    email: string | null;
+    phone: string | null;
+    branch: { id: string; name: string } | null;
+    isActive: boolean;
+    workingHoursByDay: Array<{
+      dayOfWeek: number;
+      dayLabelHe: string;
+      startTime: string;
+      endTime: string;
+    }>;
+    breaksByDay: Array<{
+      dayOfWeek: number;
+      dayLabelHe: string;
+      startTime: string;
+      endTime: string;
+    }>;
+    /** staff_break_exceptions inside snapshot date window (not the recurring weekly table). */
+    breakExceptionsInWindow: Array<{ date: string; startTime: string; endTime: string }>;
+    timeOff: Array<{
+      id: string;
+      startDate: string;
+      endDate: string;
+      isAllDay: boolean;
+      startTime: string | null;
+      endTime: string | null;
+      reason: string | null;
+    }>;
+    servicesAvailability: Array<{
+      serviceId: string;
+      serviceName: string;
+      perDay: Array<{ date: string; slotCount: number; slots: string[] }>;
+      totalSlotOptions: number;
+    }>;
+    summary: {
+      servicesWithBooking: number;
+      totalSlotOptionsAllServices: number;
+    };
+  }>;
+}
+
+/** GET /staff/:id/breaks — weekly rows + per-date exceptions */
+type StaffBreaksWindowResponse = {
+  weeklyBreaks: { id: string; dayOfWeek: number; startTime: string; endTime: string }[];
+  exceptions: { id: string; date: string; startTime: string; endTime: string }[];
+};
 
 export interface StaffMember {
   id: string;
@@ -56,11 +131,14 @@ export interface StaffMember {
   whatsapp: string | null;
   isActive: boolean;
   monthlyTargetRevenue?: number | null;
+  birthDate?: string | null;
+  gender?: string | null;
   branch?: { id: string; name: string } | null;
   staffServices?: StaffServiceItem[];
   staffWorkingHours?: { dayOfWeek: number; startTime: string; endTime: string }[];
   staffBreaks?: { id?: string; dayOfWeek: number; startTime: string; endTime: string }[];
   staffTimeOff?: { id?: string; startDate: string; endDate: string; reason: string | null }[];
+  businessRoleSlug?: string | null;
 }
 
 interface ProfileForm {
@@ -73,28 +151,130 @@ interface ProfileForm {
   whatsapp: string;
   branchId: string;
   monthlyTargetRevenue: string;
+  birthDate: string;
+  gender: GenderToggleValue;
 }
+
+type EarningsAppointment = {
+  id: string;
+  startTime: string;
+  status?: string;
+  service?: {
+    name?: string | null;
+    price?: number | string | null;
+  } | null;
+  customer?: {
+    firstName?: string | null;
+    lastName?: string | null;
+    phone?: string | null;
+  } | null;
+  payment?: {
+    amount?: number | string | null;
+    status?: string | null;
+  } | null;
+  totalAmount?: number | string | null;
+  finalPrice?: number | string | null;
+  price?: number | string | null;
+  revenueUsed?: number | string | null;
+};
+
+type StaffEarningsSummaryResponse = {
+  staffId: string;
+  fromDate: string;
+  toDate: string;
+  settlementModel: "boothRental" | "percentage" | "fixedPerTreatment";
+  completedAppointmentsCount: number;
+  totalRevenue: number;
+  grossEarnings: number;
+  advancesTotal: number;
+  alreadyPaidTotal: number;
+  remainingToPay: number;
+  finalPayable: number;
+  noShowCount: number;
+  cancelledCount: number;
+  confirmedNoShowCount: number;
+  confirmationTrackingEnabled: boolean;
+  previousPeriodComparison?: {
+    fromDate: string;
+    toDate: string;
+    completedAppointmentsCount: number;
+    totalRevenue: number;
+    grossEarnings: number;
+    finalPayable: number;
+    revenueDeltaPercent: number | null;
+    completedDeltaPercent: number | null;
+    payableDeltaPercent: number | null;
+  };
+  settlementConfig?: {
+    model: "boothRental" | "percentage" | "fixedPerTreatment";
+    boothRentalAmount?: number;
+    businessCutPercent?: number;
+    fixedAmountPerTreatment?: number;
+    allowNegativeBalance?: boolean;
+  };
+  eligibleAppointments: EarningsAppointment[];
+};
 
 function branchDisplayName(name: string | null | undefined, t: (k: string) => string): string {
   if (!name) return "—";
   return name === "Main Branch" ? t("branches.mainBranch") : name;
 }
 
+function defaultStaffBreakExceptionRange(): { start: string; end: string } {
+  const start = formatYmdLocal(new Date());
+  return { start, end: addDaysLocal(start, 179) };
+}
+
+function startOfMonthYmdLocal(base = new Date()): string {
+  return formatYmdLocal(new Date(base.getFullYear(), base.getMonth(), 1));
+}
+
+function safeNumber(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function appointmentRevenue(a: EarningsAppointment): number {
+  return safeNumber(
+    a.revenueUsed ??
+    a.payment?.amount ??
+      a.totalAmount ??
+      a.finalPrice ??
+      a.price ??
+      a.service?.price ??
+      0
+  );
+}
+
+function toCsvCell(v: string | number): string {
+  const raw = String(v ?? "");
+  if (raw.includes(",") || raw.includes("\"") || raw.includes("\n")) {
+    return `"${raw.replace(/"/g, "\"\"")}"`;
+  }
+  return raw;
+}
+
 export default function AdminStaffPage() {
   const t = useTranslation();
   const locale = useLocaleStore((s) => s.locale);
+  const dir = useLocaleStore((s) => s.dir);
   const businessId = useAuthStore((s) => s.user?.businessId);
   const isAdmin = useAuthStore((s) => s.isAdmin());
-  const selectedBranchId = useBranchStore((s) => s.selectedBranchId);
+  const selectedBranchId = useEffectiveBranchId(businessId);
   const queryClient = useQueryClient();
 
   const [modal, setModal] = useState<"add" | "edit" | "invite" | null>(null);
+  const [portalReady, setPortalReady] = useState(false);
   const [invitePhone, setInvitePhone] = useState("");
   const [editing, setEditing] = useState<StaffMember | null>(null);
   const [showInactive, setShowInactive] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [viewMode, setViewMode] = useState<"cards" | "table">("cards");
-  const [activeTab, setActiveTab] = useState<"profile" | "schedule" | "services">("profile");
+  const [, setActiveTab] = useState<"profile" | "schedule" | "services">("profile");
+  const [detailTab, setDetailTab] = useState<"hours" | "breaks" | "timeoff" | "services">("hours");
+  const [dayEnabled, setDayEnabled] = useState<Record<number, boolean>>({});
+  const [selectedStaffId, setSelectedStaffId] = useState<string | null>(null);
+  const [savingHours, setSavingHours] = useState(false);
+  const [savingScheduleExtras, setSavingScheduleExtras] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
 
   const [form, setForm] = useState<ProfileForm>({
@@ -107,6 +287,8 @@ export default function AdminStaffPage() {
     whatsapp: "",
     branchId: "",
     monthlyTargetRevenue: "",
+    birthDate: "",
+    gender: "",
   });
 
   const [workingHours, setWorkingHours] = useState<
@@ -124,11 +306,19 @@ export default function AdminStaffPage() {
   const [addServiceId, setAddServiceId] = useState("");
   const [showNewServiceForm, setShowNewServiceForm] = useState(false);
   const [newServiceName, setNewServiceName] = useState("");
+  const [staffBreakExceptionRange, setStaffBreakExceptionRange] = useState(defaultStaffBreakExceptionRange);
+  const [selectedBreakExceptionIds, setSelectedBreakExceptionIds] = useState<string[]>([]);
+  const [earningsRangeStart, setEarningsRangeStart] = useState(startOfMonthYmdLocal());
+  const [earningsRangeEnd, setEarningsRangeEnd] = useState(formatYmdLocal(new Date()));
+
+  useEffect(() => {
+    setPortalReady(true);
+  }, []);
 
   const queryParams = new URLSearchParams({
     businessId: businessId || "",
     includeInactive: String(showInactive),
-    excludeManagers: "true",
+    excludeManagers: "false",
   });
   if (selectedBranchId) queryParams.set("branchId", selectedBranchId);
 
@@ -139,6 +329,124 @@ export default function AdminStaffPage() {
     enabled: !!businessId,
   });
 
+  /** הפסקות לפי תאריך — אותו מפתח query כמו בדף ההפסקות כדי שינוי/מחיקה יסנכרן */
+  const staffBreakRangeStart = staffBreakExceptionRange.start;
+  const staffBreakRangeEnd = staffBreakExceptionRange.end;
+  const { data: staffBreaksWindow } = useQuery<StaffBreaksWindowResponse>({
+    queryKey: ["staff", selectedStaffId, "breaks", staffBreakRangeStart, staffBreakRangeEnd],
+    queryFn: () =>
+      apiClient<StaffBreaksWindowResponse>(
+        `/staff/${selectedStaffId}/breaks?businessId=${encodeURIComponent(
+          businessId!
+        )}&startDate=${staffBreakRangeStart}&endDate=${staffBreakRangeEnd}`
+      ),
+    enabled: !!businessId && !!selectedStaffId && staffBreakRangeStart <= staffBreakRangeEnd,
+  });
+
+  useEffect(() => {
+    setStaffBreakExceptionRange(defaultStaffBreakExceptionRange());
+    setSelectedBreakExceptionIds([]);
+  }, [selectedStaffId]);
+
+  useEffect(() => {
+    setSelectedBreakExceptionIds([]);
+  }, [staffBreakRangeStart, staffBreakRangeEnd]);
+
+  const deleteBreakExceptionMutation = useMutation({
+    mutationFn: (exceptionId: string) =>
+      apiClient(
+        `/staff/breaks/exception/${exceptionId}?staffId=${selectedStaffId}&businessId=${encodeURIComponent(
+          businessId || ""
+        )}`,
+        { method: "DELETE" }
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["staff", selectedStaffId, "breaks"] });
+      void queryClient.invalidateQueries({ queryKey: ["staff", businessId] });
+      toast.success(t("breaks.deleted"));
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Error"),
+  });
+
+  const bulkDeleteBreakExceptionsMutation = useMutation({
+    mutationFn: async (exceptionIds: string[]) => {
+      if (!selectedStaffId || !businessId) return;
+      await Promise.all(
+        exceptionIds.map((exceptionId) =>
+          apiClient(
+            `/staff/breaks/exception/${exceptionId}?staffId=${selectedStaffId}&businessId=${encodeURIComponent(
+              businessId
+            )}`,
+            { method: "DELETE" }
+          )
+        )
+      );
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["staff", selectedStaffId, "breaks"] });
+      void queryClient.invalidateQueries({ queryKey: ["staff", businessId] });
+      setSelectedBreakExceptionIds([]);
+      toast.success(t("breaks.bulkDeleted"));
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Error"),
+  });
+
+  /** דיבוג: רשימת עובדים, שעות, וסלוטים מהשרת (אותו נתונים כמו בטסט לוגיקלית) */
+  useEffect(() => {
+    if (!businessId || staffListRaw.length === 0) return;
+    console.log(
+      "%c[צוות] רשימת עובדים (מ-GET /staff)",
+      "color: #0ea5e9; font-weight: bold",
+      staffListRaw.map((s) => ({
+        id: s.id,
+        שם: `${s.firstName} ${s.lastName}`,
+        אימייל: s.email,
+        טלפון: s.phone,
+        סניף: s.branch?.name ?? null,
+        שעות_עבודה_לפי_יום: (s.staffWorkingHours ?? []).map((h) => ({
+          יום: DAYS.find((x) => x.d === h.dayOfWeek)?.key ?? h.dayOfWeek,
+          התחלה: h.startTime,
+          סוף: h.endTime,
+        })),
+        הפסקות: s.staffBreaks ?? [],
+        חופש_באישור: s.staffTimeOff ?? [],
+        שירותים: (s.staffServices ?? []).map((ss) => ({
+          שם: ss.service.name,
+          משך_דקות: ss.durationMinutes,
+        })),
+      })),
+    );
+
+    const snapQs = new URLSearchParams({ businessId });
+    if (selectedBranchId) snapQs.set("branchId", selectedBranchId);
+    void apiClient<StaffScheduleSnapshot>(`/staff/schedule-snapshot?${snapQs.toString()}`)
+      .then((snap) => {
+        console.log(
+          "%c[צוות] צילום זמינות (GET /staff/schedule-snapshot)",
+          "color: #22c55e; font-weight: bold",
+          `עיגון: ${snap.anchorFirstWeekdayYmd} · ${snap.daysComputed} ימים · ${snap.staffCount} עובדים`,
+        );
+        console.log("[צוות] אובייקט מלא:", snap);
+        for (const s of snap.staff) {
+          console.log(
+            `%c${s.firstName} ${s.lastName}`,
+            "font-weight: bold",
+            "| סה\"כ אפשרויות סלוט בכל השירותים:",
+            s.summary.totalSlotOptionsAllServices,
+            "| שירותים להזמנה:",
+            s.summary.servicesWithBooking,
+          );
+          console.log("  ימים עם שעות עבודה:", s.workingHoursByDay);
+          console.log("  הפסקות שבועיות (staff_breaks):", s.breaksByDay);
+          console.log("  הפסקות לפי תאריך בחלון:", s.breakExceptionsInWindow ?? []);
+          console.log("  סלוטים לפי שירות:", s.servicesAvailability);
+        }
+      })
+      .catch((err) => {
+        console.warn("[צוות] schedule-snapshot נכשל (הרשאות/רשת):", err);
+      });
+  }, [businessId, selectedBranchId, staffListRaw]);
+
   const staffList = searchQuery.trim()
     ? staffListRaw.filter(
         (s) =>
@@ -147,6 +455,17 @@ export default function AdminStaffPage() {
           s.phone?.includes(searchQuery.replace(/\D/g, ""))
       )
     : staffListRaw;
+
+  const selectedStaff = useMemo(
+    () => staffList.find((s) => s.id === selectedStaffId) ?? null,
+    [staffList, selectedStaffId]
+  );
+
+  useEffect(() => {
+    if (selectedStaffId && !staffList.some((s) => s.id === selectedStaffId)) {
+      setSelectedStaffId(null);
+    }
+  }, [staffList, selectedStaffId]);
 
   const { data: branches = [] } = useQuery<{ id: string; name: string }[]>({
     queryKey: ["branches", businessId],
@@ -164,13 +483,116 @@ export default function AdminStaffPage() {
   });
 
   const servicesParams = new URLSearchParams({ businessId: businessId || "" });
-  if (editing?.branchId) servicesParams.set("branchId", editing.branchId);
+  if (selectedStaff?.branchId) servicesParams.set("branchId", selectedStaff.branchId);
   const { data: servicesList = [] } = useQuery<{ id: string; name: string }[]>({
-    queryKey: ["services", businessId, editing?.branchId],
+    queryKey: ["services", businessId, selectedStaff?.branchId, detailTab],
     queryFn: () =>
       apiClient<{ id: string; name: string }[]>(`/services?${servicesParams.toString()}`),
-    enabled: !!businessId && !!editing && modal === "edit",
+    enabled: !!businessId && !!selectedStaff && detailTab === "services",
   });
+
+  const { data: earningsSummary } = useQuery<StaffEarningsSummaryResponse>({
+    queryKey: [
+      "staff-earnings-summary",
+      businessId,
+      selectedStaff?.id,
+      selectedBranchId,
+      earningsRangeStart,
+      earningsRangeEnd,
+    ],
+    queryFn: () =>
+      apiClient<StaffEarningsSummaryResponse>(
+        `/staff/${selectedStaff?.id}/earnings-summary?businessId=${businessId}&fromDate=${earningsRangeStart}&toDate=${earningsRangeEnd}&compareWithPreviousPeriod=true`,
+      ),
+    enabled:
+      !!businessId &&
+      !!selectedStaff?.id &&
+      !!earningsRangeStart &&
+      !!earningsRangeEnd &&
+      earningsRangeStart <= earningsRangeEnd,
+  });
+
+  const earningsAppointments = earningsSummary?.eligibleAppointments ?? [];
+  const treatmentsCount = earningsSummary?.completedAppointmentsCount ?? 0;
+  const totalRevenue = earningsSummary?.totalRevenue ?? 0;
+
+  function initDayEnabledFromHours(wh: Record<number, { start: string; end: string }>) {
+    const e: Record<number, boolean> = {};
+    for (let d = 0; d <= 6; d++) {
+      e[d] = !!(wh[d]?.start && wh[d]?.end);
+    }
+    return e;
+  }
+
+  function loadScheduleFromStaff(staff: StaffMember) {
+    const wh: Record<number, { start: string; end: string }> = {};
+    for (const h of staff.staffWorkingHours || []) {
+      wh[h.dayOfWeek] = { start: h.startTime, end: h.endTime };
+    }
+    setWorkingHours(wh);
+    setDayEnabled(initDayEnabledFromHours(wh));
+    setBreaks(
+      (staff.staffBreaks || []).map((b) => ({
+        id: (b as { id?: string }).id,
+        dayOfWeek: b.dayOfWeek,
+        startTime: b.startTime,
+        endTime: b.endTime,
+      }))
+    );
+    setTimeOff(
+      (staff.staffTimeOff || []).map((to) => ({
+        id: (to as { id?: string }).id,
+        startDate: to.startDate.split("T")[0],
+        endDate: to.endDate.split("T")[0],
+        reason: to.reason ?? "",
+      }))
+    );
+  }
+
+  async function saveWorkingHoursBatchRequest(staffId: string) {
+    if (!businessId) return;
+    const days: { dayOfWeek: number; startTime: string; endTime: string }[] = [];
+    for (let d = 0; d <= 6; d++) {
+      if (dayEnabled[d] === false) continue;
+      const h = workingHours[d];
+      if (h?.start && h?.end) {
+        days.push({ dayOfWeek: d, startTime: h.start, endTime: h.end });
+      }
+    }
+    await apiClient("/staff/working-hours/batch", {
+      method: "POST",
+      body: JSON.stringify({ staffId, businessId, days }),
+    });
+  }
+
+  async function saveBreaksAndTimeOffOnly(staffId: string) {
+    for (const b of breaks) {
+      if (b.id) continue;
+      await apiClient("/staff/breaks", {
+        method: "POST",
+        body: JSON.stringify({
+          staffId,
+          businessId,
+          dayOfWeek: b.dayOfWeek,
+          startTime: b.startTime,
+          endTime: b.endTime,
+        }),
+      });
+    }
+    for (const to of timeOff) {
+      if (to.id) continue;
+      await apiClient("/staff/time-off", {
+        method: "POST",
+        body: JSON.stringify({
+          staffId,
+          businessId,
+          startDate: to.startDate,
+          endDate: to.endDate,
+          reason: to.reason || undefined,
+        }),
+      });
+    }
+  }
 
   const createMutation = useMutation({
     mutationFn: (data: ProfileForm) =>
@@ -186,14 +608,37 @@ export default function AdminStaffPage() {
           instagram: data.instagram || undefined,
           facebook: data.facebook || undefined,
           whatsapp: data.whatsapp || undefined,
+          birthDate: data.birthDate || undefined,
+          gender:
+            data.gender === "MALE" || data.gender === "FEMALE" || data.gender === "OTHER"
+              ? data.gender
+              : undefined,
         }),
       }),
     onSuccess: async (staff) => {
-      await saveSchedule(staff.id);
-      queryClient.invalidateQueries({ queryKey: ["staff", businessId] });
+      await saveWorkingHoursBatchRequest(staff.id);
+      await saveBreaksAndTimeOffOnly(staff.id);
+      await queryClient.invalidateQueries({ queryKey: ["staff", businessId] });
+      const full = await apiClient<StaffMember>(`/staff/${staff.id}`);
+      loadScheduleFromStaff(full);
+      setSelectedStaffId(staff.id);
       setModal(null);
-      resetForm();
-      toast.success("Staff member added");
+      setEditing(null);
+      setForm({
+        firstName: "",
+        lastName: "",
+        phone: "",
+        bio: "",
+        instagram: "",
+        facebook: "",
+        whatsapp: "",
+        branchId: "",
+        monthlyTargetRevenue: "",
+        birthDate: "",
+        gender: "",
+      });
+      setActiveTab("profile");
+      toast.success(t("widget.saved"));
     },
   });
 
@@ -212,15 +657,18 @@ export default function AdminStaffPage() {
           facebook: data.facebook || undefined,
           whatsapp: data.whatsapp || undefined,
           monthlyTargetRevenue: data.monthlyTargetRevenue ? parseFloat(data.monthlyTargetRevenue) : undefined,
+          birthDate: data.birthDate ? data.birthDate : null,
+          gender:
+            data.gender === "MALE" || data.gender === "FEMALE" || data.gender === "OTHER"
+              ? data.gender
+              : null,
         }),
       }),
-    onSuccess: async (staff) => {
-      await saveSchedule(staff.id);
-      queryClient.invalidateQueries({ queryKey: ["staff", businessId] });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["staff", businessId] });
       setModal(null);
       setEditing(null);
-      resetForm();
-      toast.success("Staff updated");
+      toast.success(t("widget.saved"));
     },
   });
 
@@ -260,7 +708,8 @@ export default function AdminStaffPage() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["staff", businessId] });
       setEditingService(null);
-      setEditing(data);
+      if (data.id === selectedStaffId) loadScheduleFromStaff(data);
+      setEditing((prev) => (prev?.id === data.id ? data : prev));
       toast.success(t("widget.saved"));
     },
     onError: (e: Error) => toast.error(e.message),
@@ -275,7 +724,8 @@ export default function AdminStaffPage() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["staff", businessId] });
       setAddServiceId("");
-      setEditing(data);
+      if (data.id === selectedStaffId) loadScheduleFromStaff(data);
+      setEditing((prev) => (prev?.id === data.id ? data : prev));
       toast.success(t("widget.saved"));
     },
     onError: (e: Error) => toast.error(e.message),
@@ -289,7 +739,8 @@ export default function AdminStaffPage() {
       }),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["staff", businessId] });
-      setEditing(data);
+      if (data.id === selectedStaffId) loadScheduleFromStaff(data);
+      setEditing((prev) => (prev?.id === data.id ? data : prev));
       toast.success(t("widget.saved"));
     },
     onError: (e: Error) => toast.error(e.message),
@@ -317,7 +768,8 @@ export default function AdminStaffPage() {
       queryClient.invalidateQueries({ queryKey: ["services", businessId] });
       setShowNewServiceForm(false);
       setNewServiceName("");
-      setEditing(data);
+      if (data.id === selectedStaffId) loadScheduleFromStaff(data);
+      setEditing((prev) => (prev?.id === data.id ? data : prev));
       toast.success(t("widget.saved"));
     },
     onError: (e: Error) => toast.error(e.message),
@@ -366,46 +818,36 @@ export default function AdminStaffPage() {
     },
   });
 
-  async function saveSchedule(staffId: string) {
-    for (const [dayStr, { start, end }] of Object.entries(workingHours)) {
-      if (start && end) {
-        await apiClient("/staff/working-hours", {
-          method: "POST",
-          body: JSON.stringify({
-            staffId,
-            businessId,
-            dayOfWeek: parseInt(dayStr, 10),
-            startTime: start,
-            endTime: end,
-          }),
-        });
-      }
+  async function handleSaveWorkingHours() {
+    if (!selectedStaffId || !businessId) return;
+    setSavingHours(true);
+    try {
+      await saveWorkingHoursBatchRequest(selectedStaffId);
+      await queryClient.invalidateQueries({ queryKey: ["staff", businessId] });
+      const full = await apiClient<StaffMember>(`/staff/${selectedStaffId}`);
+      loadScheduleFromStaff(full);
+      toast.success(t("widget.saved"));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to save");
+    } finally {
+      setSavingHours(false);
     }
-    for (const b of breaks) {
-      if (b.id) continue;
-      await apiClient("/staff/breaks", {
-        method: "POST",
-        body: JSON.stringify({
-          staffId,
-          businessId,
-          dayOfWeek: b.dayOfWeek,
-          startTime: b.startTime,
-          endTime: b.endTime,
-        }),
-      });
-    }
-    for (const to of timeOff) {
-      if (to.id) continue;
-      await apiClient("/staff/time-off", {
-        method: "POST",
-        body: JSON.stringify({
-          staffId,
-          businessId,
-          startDate: to.startDate,
-          endDate: to.endDate,
-          reason: to.reason || undefined,
-        }),
-      });
+  }
+
+  async function handleSaveScheduleExtras() {
+    if (!selectedStaffId) return;
+    setSavingScheduleExtras(true);
+    try {
+      await saveBreaksAndTimeOffOnly(selectedStaffId);
+      await queryClient.invalidateQueries({ queryKey: ["staff", businessId] });
+      await queryClient.invalidateQueries({ queryKey: ["staff", selectedStaffId, "breaks"] });
+      const full = await apiClient<StaffMember>(`/staff/${selectedStaffId}`);
+      loadScheduleFromStaff(full);
+      toast.success(t("widget.saved"));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to save");
+    } finally {
+      setSavingScheduleExtras(false);
     }
   }
 
@@ -420,8 +862,11 @@ export default function AdminStaffPage() {
       whatsapp: "",
       branchId: "",
       monthlyTargetRevenue: "",
+      birthDate: "",
+      gender: "",
     });
     setWorkingHours({});
+    setDayEnabled({});
     setBreaks([]);
     setTimeOff([]);
     setActiveTab("profile");
@@ -442,8 +887,11 @@ export default function AdminStaffPage() {
       whatsapp: "",
       branchId: branches.length === 1 ? branches[0].id : "",
       monthlyTargetRevenue: "",
+      birthDate: "",
+      gender: "",
     });
-    setWorkingHours({});
+    setWorkingHours({ ...DEFAULT_WORKING_HOURS });
+    setDayEnabled(initDayEnabledFromHours(DEFAULT_WORKING_HOURS));
     setBreaks([]);
     setTimeOff([]);
     setActiveTab("profile");
@@ -462,28 +910,15 @@ export default function AdminStaffPage() {
       whatsapp: staff.whatsapp ?? "",
       branchId: staff.branchId ?? "",
       monthlyTargetRevenue: staff.monthlyTargetRevenue != null ? String(staff.monthlyTargetRevenue) : "",
+      birthDate: staff.birthDate ? staff.birthDate.slice(0, 10) : "",
+      gender:
+        staff.gender === "MALE" || staff.gender === "FEMALE" || staff.gender === "OTHER"
+          ? staff.gender
+          : "",
     });
-    const wh: Record<number, { start: string; end: string }> = {};
-    for (const h of staff.staffWorkingHours || []) {
-      wh[h.dayOfWeek] = { start: h.startTime, end: h.endTime };
-    }
-    setWorkingHours(wh);
-    setBreaks(
-      (staff.staffBreaks || []).map((b) => ({
-        id: (b as { id?: string }).id,
-        dayOfWeek: b.dayOfWeek,
-        startTime: b.startTime,
-        endTime: b.endTime,
-      }))
-    );
-    setTimeOff(
-      (staff.staffTimeOff || []).map((t) => ({
-        id: (t as { id?: string }).id,
-        startDate: t.startDate.split("T")[0],
-        endDate: t.endDate.split("T")[0],
-        reason: t.reason ?? "",
-      }))
-    );
+    loadScheduleFromStaff(staff);
+    setSelectedStaffId(staff.id);
+    setDetailTab("hours");
     setEditing(staff);
     setModal("edit");
   };
@@ -532,6 +967,116 @@ export default function AdminStaffPage() {
     return base && base !== "" ? `${base}${url}` : url;
   };
 
+  const hasBookableWorkingHours = useMemo(() => {
+    for (let d = 0; d <= 6; d++) {
+      if (dayEnabled[d] === false) continue;
+      const h = workingHours[d];
+      if (h?.start && h?.end) return true;
+    }
+    return false;
+  }, [workingHours, dayEnabled]);
+
+  const currencyFormatter = useMemo(() => {
+    return new Intl.NumberFormat(
+      locale === "he" ? "he-IL" : locale === "ar" ? "ar-SA" : "en-US",
+      { style: "currency", currency: "ILS", maximumFractionDigits: 0 }
+    );
+  }, [locale]);
+
+  function downloadStaffCsvReport() {
+    if (!selectedStaff) return;
+    const header = [
+      "appointment_id",
+      "start_time",
+      "service",
+      "customer_name",
+      "customer_phone",
+      "revenue",
+    ];
+    const rows = earningsAppointments.map((a) => {
+      const fullName = `${a.customer?.firstName ?? ""} ${a.customer?.lastName ?? ""}`.trim();
+      return [
+        a.id,
+        a.startTime,
+        a.service?.name ?? "",
+        fullName,
+        a.customer?.phone ?? "",
+        appointmentRevenue(a).toFixed(2),
+      ];
+    });
+
+    const csv = [header, ...rows]
+      .map((row) => row.map((v) => toCsvCell(v)).join(","))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = `staff-report-${selectedStaff.id}-${earningsRangeStart}-${earningsRangeEnd}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(href);
+  }
+
+  function printStaffPdfReport() {
+    if (!selectedStaff) return;
+    const reportTitle = `${selectedStaff.firstName} ${selectedStaff.lastName}`;
+    const html = `
+      <html>
+        <head>
+          <title>${reportTitle} Report</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 24px; color: #111; }
+            h1 { margin: 0 0 8px; }
+            p { margin: 0 0 16px; color: #444; }
+            .grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; margin-bottom: 16px; }
+            .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; }
+            .label { font-size: 12px; color: #666; }
+            .value { font-size: 20px; font-weight: 700; margin-top: 4px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+            th, td { border-bottom: 1px solid #eee; text-align: left; padding: 8px; font-size: 12px; }
+          </style>
+        </head>
+        <body>
+          <h1>${reportTitle}</h1>
+          <p>${earningsRangeStart} - ${earningsRangeEnd}</p>
+          <div class="grid">
+            <div class="card"><div class="label">${t("employeeDashboard.kpi.treatments")}</div><div class="value">${treatmentsCount}</div></div>
+            <div class="card"><div class="label">${t("employeeDashboard.kpi.revenue")}</div><div class="value">${currencyFormatter.format(totalRevenue)}</div></div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Start</th>
+                <th>Service</th>
+                <th>Customer</th>
+                <th>Revenue</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${earningsAppointments
+                .slice(0, 50)
+                .map((a) => {
+                  const fullName = `${a.customer?.firstName ?? ""} ${a.customer?.lastName ?? ""}`.trim();
+                  return `<tr><td>${a.id}</td><td>${a.startTime}</td><td>${a.service?.name ?? ""}</td><td>${fullName}</td><td>${appointmentRevenue(a).toFixed(2)}</td></tr>`;
+                })
+                .join("")}
+            </tbody>
+          </table>
+        </body>
+      </html>
+    `;
+    const w = window.open("", "_blank", "noopener,noreferrer,width=980,height=760");
+    if (!w) return;
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    w.print();
+  }
+
   if (!businessId) {
     return (
       <div>
@@ -563,12 +1108,12 @@ export default function AdminStaffPage() {
   const errMsg = rawErrMsg ? translateApiError(locale, rawErrMsg) : "";
 
   return (
-    <div>
+    <div dir={dir}>
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">{t("nav.staff")}</h1>
-          <p className="mt-1 text-zinc-600 dark:text-zinc-400">
-            {t("staff.subtitle")}
+          <h1 className="text-2xl font-semibold tracking-tight">{t("staff.managementTitle")}</h1>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+            {t("staff.managementSubtitle")}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -587,22 +1132,6 @@ export default function AdminStaffPage() {
             />
             {t("staff.showInactive")}
           </label>
-          <div className="flex gap-1 rounded-lg border border-zinc-200 p-1 dark:border-zinc-700">
-            <button
-              type="button"
-              onClick={() => setViewMode("cards")}
-              className={`rounded px-2 py-1 text-sm ${viewMode === "cards" ? "bg-zinc-200 dark:bg-zinc-700" : "hover:bg-zinc-100 dark:hover:bg-zinc-800"}`}
-            >
-              Cards
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode("table")}
-              className={`rounded px-2 py-1 text-sm ${viewMode === "table" ? "bg-zinc-200 dark:bg-zinc-700" : "hover:bg-zinc-100 dark:hover:bg-zinc-800"}`}
-            >
-              Table
-            </button>
-          </div>
           {isAdmin && (
             <div className="flex gap-2">
               <button
@@ -696,193 +1225,756 @@ export default function AdminStaffPage() {
             </button>
           )}
         </div>
-      ) : viewMode === "table" ? (
-        <div className="overflow-x-auto rounded-xl border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-800">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-zinc-200 dark:border-zinc-700">
-                <th className="px-4 py-3 text-left font-medium">
-                  <div className="flex items-center gap-3">
-                    <span className="inline-block h-8 w-8 shrink-0" aria-hidden />
-                    {t("staff.name")}
-                  </div>
-                </th>
-                <th className="px-4 py-3 text-left font-medium">{t("staff.branch")}</th>
-                <th className="px-4 py-3 text-center font-medium">{t("staff.status")}</th>
-                <th className="px-4 py-3 text-right font-medium">{t("staff.actions")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {staffList.map((staff) => (
-                <tr key={staff.id} className="border-b border-zinc-100 dark:border-zinc-700/50">
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-3">
+      ) : (
+        <div className="flex w-full flex-col gap-5">
+          <aside className="w-full min-w-0 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                {t("staff.managementTeamList")}
+              </p>
+              <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                {staffList.length}
+              </span>
+            </div>
+            <div className="overflow-x-auto pb-2">
+              <div className="flex min-w-max items-start gap-3">
+                {staffList.map((staff) => {
+                  const isSelected = selectedStaffId === staff.id;
+                  return (
+                    <button
+                      key={staff.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedStaffId(staff.id);
+                        loadScheduleFromStaff(staff);
+                        setDetailTab("hours");
+                      }}
+                      className={`group flex w-[110px] shrink-0 flex-col items-center gap-2 rounded-2xl border px-3 py-3 text-center transition-all ${
+                        isSelected
+                          ? "border-violet-400 bg-violet-50 shadow-md dark:border-violet-500 dark:bg-violet-950/30"
+                          : "border-zinc-200 bg-zinc-50 hover:border-zinc-300 hover:bg-white dark:border-zinc-700 dark:bg-zinc-800 dark:hover:border-zinc-600"
+                      }`}
+                    >
                       <StaffAvatar
                         avatarUrl={staff.avatarUrl}
                         firstName={staff.firstName}
                         lastName={staff.lastName}
-                        size="sm"
-                        className="shrink-0"
+                        size="lg"
+                        className="ring-2 ring-white dark:ring-zinc-900"
                       />
-                      <span className="font-medium">
-                        {staff.firstName} {staff.lastName}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-zinc-500">{branchDisplayName(staff.branch?.name, t)}</td>
-                  <td className="px-4 py-3 text-center">
-                    {isAdmin ? (
-                      <input
-                        type="checkbox"
-                        checked={staff.isActive}
-                        onChange={() => {
-                          if (staff.isActive) {
-                            if (confirm(t("staff.confirmDeactivate"))) deactivateMutation.mutate(staff.id);
+                      <div className="w-full">
+                        <p className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                          {staff.firstName} {staff.lastName}
+                        </p>
+                        <p className="mt-0.5 truncate text-[11px] text-zinc-500 dark:text-zinc-400">
+                          {branchDisplayName(staff.branch?.name, t)}
+                        </p>
+                      </div>
+                      <span
+                        className={`inline-flex h-2 w-2 rounded-full ${
+                          staff.isActive ? "bg-emerald-500" : "bg-zinc-400"
+                        }`}
+                        aria-label={staff.isActive ? "active" : "inactive"}
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </aside>
+
+          <section className="w-full min-w-0 rounded-xl border border-zinc-200/80 bg-zinc-50/30 p-5 dark:border-zinc-700/80 dark:bg-zinc-950/20 lg:p-6">
+            {selectedStaff ? (
+              <>
+                <div className="mb-6 flex flex-col gap-4 border-b border-zinc-200 pb-6 dark:border-zinc-800 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h2 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+                      {selectedStaff.firstName} {selectedStaff.lastName}
+                    </h2>
+                    <p className="mt-1 text-sm text-zinc-500">
+                      {branchDisplayName(selectedStaff.branch?.name, t)}
+                    </p>
+                  </div>
+                  {isAdmin && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedStaff.isActive) {
+                            if (confirm(t("staff.confirmDeactivate"))) deactivateMutation.mutate(selectedStaff.id);
                           } else {
-                            activateMutation.mutate(staff.id);
+                            activateMutation.mutate(selectedStaff.id);
                           }
                         }}
-                        className="shrink-0"
-                        aria-label={staff.isActive ? t("staff.deactivate") : t("staff.activate")}
-                      />
-                    ) : (
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-xs ${
-                          staff.isActive ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300" : "bg-zinc-100 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400"
+                        className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium ${
+                          selectedStaff.isActive
+                            ? "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300"
+                            : "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300"
                         }`}
                       >
-                        {staff.isActive ? "Active" : "Inactive"}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    {isAdmin && (
-                      <div className="flex justify-end gap-1">
-                        <button
-                          type="button"
-                          onClick={() => openEdit(staff)}
-                          className="rounded p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-700 dark:hover:text-zinc-300"
-                          aria-label={t("staff.edit")}
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </button>
+                        <Power className="h-4 w-4" />
+                        {selectedStaff.isActive ? t("staff.deactivate") : t("staff.activate")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openEdit(selectedStaff)}
+                        className="inline-flex items-center gap-2 rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium hover:bg-white dark:border-zinc-600 dark:hover:bg-zinc-800"
+                      >
+                        <Pencil className="h-4 w-4" />
+                        {t("staff.editProfile")}
+                      </button>
                         <button
                           type="button"
                           onClick={() => {
-                            if (confirm(t("staff.confirmDelete"))) deleteMutation.mutate(staff.id);
-                          }}
-                          className="rounded p-1.5 text-zinc-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
-                          aria-label={t("staff.delete")}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {staffList.map((staff) => (
-            <div
-              key={staff.id}
-              className={`rounded-xl border bg-white p-4 dark:bg-zinc-800 ${
-                staff.isActive
-                  ? "border-zinc-200 dark:border-zinc-700"
-                  : "border-zinc-200 opacity-75 dark:border-zinc-700"
-              }`}
-            >
-              <div className="flex items-start gap-3">
-                <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
-                  {staff.avatarUrl ? (
-                    <img
-                      src={getPhotoUrl(staff.avatarUrl) ?? ""}
-                      alt=""
-                      className="h-full w-full object-cover"
-                      referrerPolicy="no-referrer"
-                    />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center text-xl font-semibold text-zinc-500">
-                      {staff.firstName[0]}
-                      {staff.lastName[0]}
+                          if (confirm(`${t("staff.confirmDelete")}\n\n${t("employeeDashboard.staffDeletedHint")}`)) {
+                            deleteMutation.mutate(selectedStaff.id);
+                          }
+                        }}
+                        className="inline-flex items-center gap-2 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-100 dark:border-red-700 dark:bg-red-900/20 dark:text-red-300"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        {t("staff.delete")}
+                      </button>
                     </div>
                   )}
                 </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <h3 className="font-semibold">
-                        {staff.firstName} {staff.lastName}
+
+                <EmployeePerformanceDashboard
+                  key={selectedStaff.id}
+                  profile={{
+                    id: selectedStaff.id,
+                    fullName: `${selectedStaff.firstName} ${selectedStaff.lastName}`,
+                    roleLabel: selectedStaff.businessRoleSlug ? t(`role.${selectedStaff.businessRoleSlug}`) : t("staff.roleManager"),
+                    statusLabel: selectedStaff.isActive
+                      ? t("employeeDashboard.status.active")
+                      : t("employeeDashboard.status.inactive"),
+                    statusTone: selectedStaff.isActive ? "active" : "inactive",
+                    avatarUrl: getPhotoUrl(selectedStaff.avatarUrl),
+                    settlementModel: earningsSummary?.settlementModel ?? "percentage",
+                  }}
+                  isRtl={dir === "rtl"}
+                  earningsSummary={earningsSummary ?? null}
+                  monthlyTargetRevenue={Math.max(0, Number(selectedStaff.monthlyTargetRevenue ?? 0))}
+                  rangeStart={earningsRangeStart}
+                  rangeEnd={earningsRangeEnd}
+                  onRangeStartChange={setEarningsRangeStart}
+                  onRangeEndChange={setEarningsRangeEnd}
+                  onExportCsv={downloadStaffCsvReport}
+                  onExportPdf={printStaffPdfReport}
+                  formatCurrency={(value) => currencyFormatter.format(value)}
+                  t={t}
+                />
+
+                <div className="mb-4 flex flex-wrap gap-1 border-b border-zinc-200 dark:border-zinc-800">
+                  {(
+                    [
+                      ["hours", t("staff.workingHours")],
+                      ["breaks", t("staff.breaks")],
+                      ["timeoff", t("staff.timeOff")],
+                      ["services", t("nav.services")],
+                    ] as const
+                  ).map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setDetailTab(id)}
+                      className={`rounded-t-lg px-3 py-2 text-sm font-medium transition-colors ${
+                        detailTab === id
+                          ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-900 dark:text-zinc-50"
+                          : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {detailTab === "hours" && (
+                  <StaffWeeklyHoursPanel
+                    t={t}
+                    workingHours={workingHours}
+                    setWorkingHours={setWorkingHours}
+                    dayEnabled={dayEnabled}
+                    setDayEnabled={setDayEnabled}
+                    hasBookableWorkingHours={hasBookableWorkingHours}
+                    showDefaultHint={false}
+                    saveLabel={t("staff.saveWorkingHours")}
+                    savingLabel={t("widget.saving")}
+                    onSave={handleSaveWorkingHours}
+                    saving={savingHours}
+                  />
+                )}
+
+                {detailTab === "breaks" && (
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                        <Coffee className="h-4 w-4" />
+                        {t("staff.breaks")}
                       </h3>
-                      {staff.title && (
-                        <p className="text-sm text-zinc-500">{staff.title}</p>
-                      )}
-                      {staff.branch && (
-                        <p className="text-xs text-zinc-500">{branchDisplayName(staff.branch.name, t)}</p>
+                      <button
+                        type="button"
+                        onClick={handleSaveScheduleExtras}
+                        disabled={savingScheduleExtras}
+                        className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
+                      >
+                        {savingScheduleExtras ? t("widget.saving") : t("staff.saveBreaksAndTimeOff")}
+                      </button>
+                    </div>
+                    <p className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                      {t("staff.breaksWeeklySubtitle")}
+                    </p>
+                    {breaks.map((b, i) => (
+                      <div key={i} className="mb-2 flex flex-wrap items-center gap-2 text-sm">
+                        <select
+                          value={b.dayOfWeek}
+                          onChange={(e) =>
+                            setBreaks((p) => {
+                              const n = [...p];
+                              n[i] = { ...n[i], dayOfWeek: parseInt(e.target.value, 10) };
+                              return n;
+                            })
+                          }
+                          className="rounded-lg border border-zinc-300 px-2 py-1.5 dark:border-zinc-600 dark:bg-zinc-800"
+                        >
+                          {DAYS.map(({ d, key }) => (
+                            <option key={d} value={d}>
+                              {t(key)}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          type="time"
+                          value={b.startTime}
+                          onChange={(e) =>
+                            setBreaks((p) => {
+                              const n = [...p];
+                              n[i] = { ...n[i], startTime: e.target.value };
+                              return n;
+                            })
+                          }
+                          className="rounded-lg border border-zinc-300 px-2 py-1.5 dark:border-zinc-600 dark:bg-zinc-800"
+                        />
+                        <input
+                          type="time"
+                          value={b.endTime}
+                          onChange={(e) =>
+                            setBreaks((p) => {
+                              const n = [...p];
+                              n[i] = { ...n[i], endTime: e.target.value };
+                              return n;
+                            })
+                          }
+                          className="rounded-lg border border-zinc-300 px-2 py-1.5 dark:border-zinc-600 dark:bg-zinc-800"
+                        />
+                        <button type="button" onClick={() => removeBreak(i)} className="text-red-600 hover:underline">
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                    <button type="button" onClick={addBreak} className="text-sm text-violet-600 hover:underline dark:text-violet-400">
+                      {t("staff.addBreak")}
+                    </button>
+
+                    <div className="mt-6 border-t border-zinc-200 pt-4 dark:border-zinc-700">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                          {t("staff.breaksByDateSubtitle")}
+                        </p>
+                        <Link
+                          href="/admin/breaks"
+                          className="text-xs font-medium text-violet-600 hover:underline dark:text-violet-400"
+                        >
+                          {t("staff.breaksManageFull")}
+                        </Link>
+                      </div>
+                      <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">{t("staff.exceptionRangeHint")}</p>
+                      <div className="mb-3 flex flex-wrap items-end gap-3">
+                        <label className="block text-xs text-zinc-600 dark:text-zinc-400">
+                          <span className="mb-1 block">{t("staff.exceptionRangeFrom")}</span>
+                          <input
+                            type="date"
+                            value={staffBreakExceptionRange.start}
+                            onChange={(e) =>
+                              setStaffBreakExceptionRange((p) => ({ ...p, start: e.target.value }))
+                            }
+                            className="rounded-lg border border-zinc-300 px-2 py-1.5 text-sm dark:border-zinc-600 dark:bg-zinc-800"
+                          />
+                        </label>
+                        <label className="block text-xs text-zinc-600 dark:text-zinc-400">
+                          <span className="mb-1 block">{t("staff.exceptionRangeTo")}</span>
+                          <input
+                            type="date"
+                            value={staffBreakExceptionRange.end}
+                            onChange={(e) =>
+                              setStaffBreakExceptionRange((p) => ({ ...p, end: e.target.value }))
+                            }
+                            className="rounded-lg border border-zinc-300 px-2 py-1.5 text-sm dark:border-zinc-600 dark:bg-zinc-800"
+                          />
+                        </label>
+                      </div>
+
+                      {(staffBreaksWindow?.exceptions ?? []).length === 0 ? (
+                        <p className="text-sm text-zinc-500 dark:text-zinc-400">{t("staff.breaksByDateEmpty")}</p>
+                      ) : (
+                        <>
+                          {isAdmin && (
+                            <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+                              <span className="text-zinc-600 dark:text-zinc-400">
+                                {t("breaks.selectedCount").replace("{count}", String(selectedBreakExceptionIds.length))}
+                              </span>
+                              <button
+                                type="button"
+                                className="text-violet-600 hover:underline dark:text-violet-400"
+                                onClick={() => {
+                                  const all = (staffBreaksWindow?.exceptions ?? []).map((x) => x.id);
+                                  setSelectedBreakExceptionIds(all);
+                                }}
+                              >
+                                {t("breaks.selectAllInList")}
+                              </button>
+                              <button
+                                type="button"
+                                className="text-zinc-600 hover:underline dark:text-zinc-400"
+                                onClick={() => setSelectedBreakExceptionIds([])}
+                              >
+                                {t("breaks.clearSelection")}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={
+                                  selectedBreakExceptionIds.length === 0 || bulkDeleteBreakExceptionsMutation.isPending
+                                }
+                                className="text-red-600 hover:underline disabled:opacity-40"
+                                onClick={() => {
+                                  const n = selectedBreakExceptionIds.length;
+                                  if (
+                                    n > 0 &&
+                                    confirm(t("breaks.confirmBulkDelete").replace("{count}", String(n)))
+                                  ) {
+                                    bulkDeleteBreakExceptionsMutation.mutate([...selectedBreakExceptionIds]);
+                                  }
+                                }}
+                              >
+                                {t("breaks.deleteSelected")}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={
+                                  (staffBreaksWindow?.exceptions ?? []).length === 0 ||
+                                  bulkDeleteBreakExceptionsMutation.isPending
+                                }
+                                className="text-red-600 hover:underline disabled:opacity-40"
+                                onClick={() => {
+                                  const all = staffBreaksWindow?.exceptions ?? [];
+                                  if (
+                                    all.length > 0 &&
+                                    confirm(
+                                      t("breaks.confirmDeleteAllInList").replace("{count}", String(all.length))
+                                    )
+                                  ) {
+                                    bulkDeleteBreakExceptionsMutation.mutate(all.map((x) => x.id));
+                                  }
+                                }}
+                              >
+                                {t("breaks.deleteAllInList")}
+                              </button>
+                            </div>
+                          )}
+                          <ul className="space-y-2 text-sm">
+                            {(staffBreaksWindow?.exceptions ?? [])
+                              .slice()
+                              .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+                              .map((ex) => {
+                                const d = String(ex.date).slice(0, 10);
+                                const st = String(ex.startTime).slice(0, 5);
+                                const en = String(ex.endTime).slice(0, 5);
+                                return (
+                                  <li
+                                    key={ex.id}
+                                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-600"
+                                  >
+                                    <span className="flex min-w-0 items-center gap-2">
+                                      {isAdmin && (
+                                        <input
+                                          type="checkbox"
+                                          className="rounded border-zinc-300"
+                                          checked={selectedBreakExceptionIds.includes(ex.id)}
+                                          onChange={(e) => {
+                                            if (e.target.checked) {
+                                              setSelectedBreakExceptionIds((p) =>
+                                                p.includes(ex.id) ? p : [...p, ex.id]
+                                              );
+                                            } else {
+                                              setSelectedBreakExceptionIds((p) => p.filter((id) => id !== ex.id));
+                                            }
+                                          }}
+                                        />
+                                      )}
+                                      <span>
+                                        <span className="font-medium">{formatLongWeekdayDateYmd(d, locale)}</span>
+                                        <span className="mx-2 text-zinc-400">·</span>
+                                        <span className="tabular-nums">
+                                          {st}–{en}
+                                        </span>
+                                      </span>
+                                    </span>
+                                    {isAdmin && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (confirm(t("breaks.confirmDeleteException"))) {
+                                            deleteBreakExceptionMutation.mutate(ex.id);
+                                          }
+                                        }}
+                                        className="text-xs text-red-600 hover:underline"
+                                      >
+                                        {t("services.delete")}
+                                      </button>
+                                    )}
+                                  </li>
+                                );
+                              })}
+                          </ul>
+                        </>
                       )}
                     </div>
-                    {isAdmin && (
-                      <div className="flex gap-1">
-                        <button
-                          type="button"
-                          onClick={() => openEdit(staff)}
-                          className="rounded p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-700 dark:hover:text-zinc-300"
-                          aria-label={t("staff.edit")}
+                  </div>
+                )}
+
+                {detailTab === "timeoff" && (
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                        <CalendarOff className="h-4 w-4" />
+                        {t("staff.timeOff")}
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={handleSaveScheduleExtras}
+                        disabled={savingScheduleExtras}
+                        className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
+                      >
+                        {savingScheduleExtras ? t("widget.saving") : t("staff.saveBreaksAndTimeOff")}
+                      </button>
+                    </div>
+                    {timeOff.map((to, i) => (
+                      <div key={i} className="mb-2 flex flex-wrap items-center gap-2 text-sm">
+                        <input
+                          type="date"
+                          value={to.startDate}
+                          onChange={(e) =>
+                            setTimeOff((p) => {
+                              const n = [...p];
+                              n[i] = { ...n[i], startDate: e.target.value };
+                              return n;
+                            })
+                          }
+                          className="rounded-lg border border-zinc-300 px-2 py-1.5 dark:border-zinc-600 dark:bg-zinc-800"
+                        />
+                        <input
+                          type="date"
+                          value={to.endDate}
+                          onChange={(e) =>
+                            setTimeOff((p) => {
+                              const n = [...p];
+                              n[i] = { ...n[i], endDate: e.target.value };
+                              return n;
+                            })
+                          }
+                          className="rounded-lg border border-zinc-300 px-2 py-1.5 dark:border-zinc-600 dark:bg-zinc-800"
+                        />
+                        <select
+                          value={to.reason}
+                          onChange={(e) =>
+                            setTimeOff((p) => {
+                              const n = [...p];
+                              n[i] = { ...n[i], reason: e.target.value };
+                              return n;
+                            })
+                          }
+                          className="rounded-lg border border-zinc-300 px-2 py-1.5 dark:border-zinc-600 dark:bg-zinc-800"
                         >
-                          <Pencil className="h-4 w-4" />
+                          <option value="vacation">{t("staff.vacation")}</option>
+                          <option value="sick">{t("staff.sick")}</option>
+                          <option value="personal">{t("staff.personal")}</option>
+                        </select>
+                        <button type="button" onClick={() => removeTimeOff(i)} className="text-red-600 hover:underline">
+                          ×
                         </button>
-                        {staff.isActive ? (
+                      </div>
+                    ))}
+                    <button type="button" onClick={addTimeOff} className="text-sm text-violet-600 hover:underline dark:text-violet-400">
+                      {t("staff.addTimeOff")}
+                    </button>
+                  </div>
+                )}
+
+                {detailTab === "services" && (
+                  <div className="space-y-4">
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                      <Scissors className="h-4 w-4" />
+                      {t("staff.myServices")}
+                    </h3>
+                    {(selectedStaff.staffServices ?? []).length === 0 ? (
+                      <p className="text-sm text-zinc-500 dark:text-zinc-400">{t("staff.noServicesAssigned")}</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {(selectedStaff.staffServices ?? []).map((ss) => (
+                          <div
+                            key={ss.id}
+                            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-600 dark:bg-zinc-800/50"
+                          >
+                            <div>
+                              <p className="font-medium">{ss.service.name}</p>
+                              <p className="flex items-center gap-4 text-sm text-zinc-500">
+                                <span className="flex items-center gap-1">
+                                  <Clock className="h-3.5 w-3.5" />
+                                  {ss.durationMinutes} min
+                                </span>
+                                <span className="flex items-center gap-1">₪{Number(ss.price).toFixed(0)}</span>
+                              </p>
+                            </div>
+                            {editingService?.id === ss.id ? (
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div>
+                                  <span className="mb-0.5 block text-xs text-zinc-500">{t("services.duration")}</span>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={480}
+                                    value={serviceDuration}
+                                    onChange={(e) => setServiceDuration(parseInt(e.target.value, 10) || 30)}
+                                    className="w-16 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
+                                  />
+                                </div>
+                                <div>
+                                  <span className="mb-0.5 block text-xs text-zinc-500">{t("services.price")}</span>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    value={servicePrice}
+                                    onChange={(e) => setServicePrice(parseFloat(e.target.value) || 0)}
+                                    className="w-20 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
+                                  />
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    updateStaffServicesMutation.mutate({
+                                      staffId: selectedStaff.id,
+                                      updates: [
+                                        {
+                                          staffServiceId: ss.id,
+                                          durationMinutes: serviceDuration,
+                                          price: servicePrice,
+                                        },
+                                      ],
+                                    });
+                                  }}
+                                  disabled={updateStaffServicesMutation.isPending}
+                                  className="btn-primary rounded px-2 py-1 text-sm"
+                                >
+                                  {t("staff.save")}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingService(null)}
+                                  className="rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600"
+                                >
+                                  {t("staff.cancel")}
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingService(ss);
+                                    setServiceDuration(ss.durationMinutes);
+                                    setServicePrice(Number(ss.price));
+                                  }}
+                                  className="rounded p-1.5 text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                                  aria-label={t("staff.edit")}
+                                >
+                                  <Pencil className="h-4 w-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (confirm(t("staff.confirmRemoveService") || "Remove?")) {
+                                      removeStaffServiceMutation.mutate({
+                                        staffId: selectedStaff.id,
+                                        staffServiceId: ss.id,
+                                      });
+                                    }
+                                  }}
+                                  className="rounded p-1.5 text-zinc-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20"
+                                  aria-label={t("staff.delete")}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-end gap-2 border-t border-zinc-200 pt-4 dark:border-zinc-700">
+                      <select
+                        value={addServiceId}
+                        onChange={(e) => setAddServiceId(e.target.value)}
+                        className="min-h-[2.75rem] min-w-[10rem] rounded-lg border-2 border-zinc-300 px-3 py-2.5 text-sm dark:border-zinc-600 dark:bg-zinc-800"
+                      >
+                        <option value="">{t("staff.addService")}</option>
+                        {servicesList
+                          .filter((s) => !(selectedStaff.staffServices ?? []).some((ss) => ss.service.id === s.id))
+                          .map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.name}
+                            </option>
+                          ))}
+                      </select>
+                      {addServiceId && (
+                        <>
+                          <div>
+                            <span className="mb-0.5 block text-xs text-zinc-500">{t("services.duration")} *</span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={480}
+                              value={serviceDuration}
+                              onChange={(e) => setServiceDuration(parseInt(e.target.value, 10) || 30)}
+                              className="w-20 rounded-lg border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
+                            />
+                          </div>
+                          <div>
+                            <span className="mb-0.5 block text-xs text-zinc-500">{t("services.price")} *</span>
+                            <input
+                              type="number"
+                              min={0}
+                              value={servicePrice}
+                              onChange={(e) => setServicePrice(parseFloat(e.target.value) || 0)}
+                              className="w-24 rounded-lg border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
+                            />
+                          </div>
                           <button
                             type="button"
                             onClick={() => {
-                              if (confirm(t("staff.confirmDeactivate"))) {
-                                deactivateMutation.mutate(staff.id);
-                              }
+                              addStaffServiceMutation.mutate({
+                                staffId: selectedStaff.id,
+                                serviceId: addServiceId,
+                                durationMinutes: serviceDuration,
+                                price: servicePrice,
+                              });
                             }}
-                            className="rounded p-1.5 text-zinc-500 hover:bg-amber-50 hover:text-amber-600 dark:hover:bg-amber-900/20 dark:hover:text-amber-400"
-                            aria-label={t("staff.deactivate")}
-                            title={t("staff.deactivate")}
+                            disabled={
+                              addStaffServiceMutation.isPending || serviceDuration < 1 || servicePrice <= 0
+                            }
+                            className="btn-primary rounded-lg px-3 py-1 text-sm disabled:opacity-50"
                           >
-                            <Power className="h-4 w-4" />
+                            {t("staff.addService")}
                           </button>
-                        ) : (
+                        </>
+                      )}
+                      <div className="flex w-full flex-wrap items-end gap-2">
+                        {!showNewServiceForm ? (
                           <button
                             type="button"
-                            onClick={() => activateMutation.mutate(staff.id)}
-                            className="rounded p-1.5 text-zinc-500 hover:bg-green-50 hover:text-green-600 dark:hover:bg-green-900/20 dark:hover:text-green-400"
-                            aria-label={t("staff.activate")}
+                            onClick={() => setShowNewServiceForm(true)}
+                            className="flex items-center gap-1 text-sm text-primary hover:underline"
                           >
-                            <UserPlus className="h-4 w-4" />
+                            <Plus className="h-4 w-4" />
+                            {t("staff.addNewService")}
                           </button>
+                        ) : (
+                          <div className="flex w-full flex-wrap items-end gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-600 dark:bg-zinc-800/50">
+                            <div>
+                              <span className="mb-0.5 block text-xs text-zinc-500">{t("services.name")} *</span>
+                              <input
+                                type="text"
+                                value={newServiceName}
+                                onChange={(e) => setNewServiceName(e.target.value)}
+                                className="w-32 rounded-lg border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
+                              />
+                            </div>
+                            <div>
+                              <span className="mb-0.5 block text-xs text-zinc-500">{t("services.duration")} *</span>
+                              <input
+                                type="number"
+                                min={1}
+                                max={480}
+                                value={serviceDuration}
+                                onChange={(e) => setServiceDuration(parseInt(e.target.value, 10) || 30)}
+                                className="w-20 rounded-lg border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
+                              />
+                            </div>
+                            <div>
+                              <span className="mb-0.5 block text-xs text-zinc-500">{t("services.price")} *</span>
+                              <input
+                                type="number"
+                                min={0}
+                                value={servicePrice}
+                                onChange={(e) => setServicePrice(parseFloat(e.target.value) || 0)}
+                                className="w-24 rounded-lg border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!newServiceName.trim()) {
+                                  toast.error(t("services.name"));
+                                  return;
+                                }
+                                createAndAssignServiceMutation.mutate({
+                                  staffId: selectedStaff.id,
+                                  name: newServiceName.trim(),
+                                  branchId: selectedStaff.branchId ?? branches[0]?.id ?? "",
+                                  durationMinutes: serviceDuration,
+                                  price: servicePrice,
+                                });
+                              }}
+                              disabled={
+                                createAndAssignServiceMutation.isPending ||
+                                !newServiceName.trim() ||
+                                !(selectedStaff.branchId ?? branches[0]?.id) ||
+                                serviceDuration < 1 ||
+                                servicePrice <= 0
+                              }
+                              className="btn-primary rounded-lg px-3 py-1 text-sm disabled:opacity-50"
+                            >
+                              {createAndAssignServiceMutation.isPending ? t("widget.loading") : t("staff.addService")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowNewServiceForm(false);
+                                setNewServiceName("");
+                              }}
+                              className="rounded-lg border border-zinc-300 px-3 py-1 text-sm dark:border-zinc-600"
+                            >
+                              {t("staff.cancel")}
+                            </button>
+                          </div>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (confirm(t("staff.confirmDelete"))) {
-                              deleteMutation.mutate(staff.id);
-                            }
-                          }}
-                          className="rounded p-1.5 text-zinc-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
-                          aria-label={t("staff.delete")}
-                          title={t("staff.delete")}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
                       </div>
-                    )}
+                    </div>
                   </div>
-                </div>
+                )}
+              </>
+            ) : (
+              <div className="flex min-h-[200px] items-center justify-center rounded-lg border border-dashed border-zinc-200 bg-white/50 p-8 text-center dark:border-zinc-700 dark:bg-zinc-900/20">
+                <p className="text-sm text-zinc-500 dark:text-zinc-400">{t("staff.selectMemberHint")}</p>
               </div>
-            </div>
-          ))}
+            )}
+          </section>
         </div>
       )}
 
       {/* Invite by Phone Modal */}
-      {modal === "invite" && (
+      {portalReady &&
+        modal === "invite" &&
+        createPortal(
         <div className="fixed inset-0 z-50 flex min-h-[100dvh] items-center justify-center bg-black/70 p-4">
           <div className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-6 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
             <h2 className="mb-4 text-lg font-semibold">הזמן עובד לפי טלפון</h2>
@@ -915,57 +2007,27 @@ export default function AdminStaffPage() {
             </button>
           </div>
         </div>
-      )}
+      , document.body)}
 
       {/* Add/Edit Modal */}
-      {modal && modal !== "invite" && (
+      {portalReady &&
+        modal &&
+        modal !== "invite" &&
+        createPortal(
         <div className="fixed inset-0 z-50 flex min-h-[100dvh] items-center justify-center bg-black/70 p-4 pb-24 lg:pb-4">
           <div className="flex max-h-[calc(100dvh-6rem)] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-900 lg:max-h-[90vh]">
             <div className="shrink-0 px-6 pt-6">
               <h2 className="mb-4 text-lg font-semibold">
                 {modal === "add" ? t("staff.add") : t("staff.edit")}
               </h2>
-              <div className="flex gap-2 border-b border-zinc-200 dark:border-zinc-700">
-              <button
-                type="button"
-                onClick={() => setActiveTab("profile")}
-                className={`border-b-2 px-2 py-1 text-sm ${
-                  activeTab === "profile"
-                    ? "border-zinc-900 dark:border-zinc-100"
-                    : "border-transparent"
-                }`}
-              >
-                Profile
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab("schedule")}
-                className={`border-b-2 px-2 py-1 text-sm ${
-                  activeTab === "schedule"
-                    ? "border-zinc-900 dark:border-zinc-100"
-                    : "border-transparent"
-                }`}
-              >
-                {t("staff.settings")}
-              </button>
-              {modal === "edit" && (
-                <button
-                  type="button"
-                  onClick={() => setActiveTab("services")}
-                  className={`border-b-2 px-2 py-1 text-sm ${
-                    activeTab === "services"
-                      ? "border-zinc-900 dark:border-zinc-100"
-                      : "border-transparent"
-                  }`}
-                >
-                  {t("nav.services")}
-                </button>
+              {modal === "add" && (
+                <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
+                  {t("staff.addModalScheduleHint")}
+                </p>
               )}
-              </div>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
-            {activeTab === "profile" && (
               <form onSubmit={handleSubmit} className="space-y-4">
                 {modal === "edit" && editing && (
                   <div className="flex items-center gap-4">
@@ -1058,6 +2120,17 @@ export default function AdminStaffPage() {
                     </p>
                   )}
                 </div>
+
+                <BirthDateTripleInput
+                  labelKey="register.birthDateOptional"
+                  value={form.birthDate}
+                  onChange={(iso) => setForm((p) => ({ ...p, birthDate: iso }))}
+                />
+                <GenderToggle
+                  labelKey="customers.gender"
+                  value={form.gender}
+                  onChange={(v) => setForm((p) => ({ ...p, gender: v === "OTHER" ? "" : v }))}
+                />
 
                 <div>
                   <label className="mb-1 block text-sm font-medium">
@@ -1161,483 +2234,6 @@ export default function AdminStaffPage() {
                   />
                 </div>
               </form>
-            )}
-
-            {activeTab === "schedule" && (
-              <div className="space-y-6">
-                <div>
-                  <h3 className="mb-2 flex items-center gap-2 text-sm font-medium">
-                    <Clock className="h-4 w-4" />
-                    {t("staff.workingHours")}
-                  </h3>
-                  <div className="space-y-2">
-                    {DAYS.map(({ d, key }) => (
-                      <div
-                        key={d}
-                        className="flex items-center gap-2 text-sm"
-                      >
-                        <span className="w-10">{t(key)}</span>
-                        <input
-                          type="time"
-                          value={workingHours[d]?.start ?? ""}
-                          onChange={(e) =>
-                            setWorkingHours((p) => ({
-                              ...p,
-                              [d]: {
-                                start: e.target.value,
-                                end: p[d]?.end ?? "",
-                              },
-                            }))
-                          }
-                          className="rounded border border-zinc-300 px-2 py-1 dark:border-zinc-600 dark:bg-zinc-800"
-                        />
-                        <span>–</span>
-                        <input
-                          type="time"
-                          value={workingHours[d]?.end ?? ""}
-                          onChange={(e) =>
-                            setWorkingHours((p) => ({
-                              ...p,
-                              [d]: {
-                                start: p[d]?.start ?? "",
-                                end: e.target.value,
-                              },
-                            }))
-                          }
-                          className="rounded border border-zinc-300 px-2 py-1 dark:border-zinc-600 dark:bg-zinc-800"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <h3 className="mb-2 flex items-center gap-2 text-sm font-medium">
-                    <Coffee className="h-4 w-4" />
-                    {t("staff.breaks")}
-                  </h3>
-                  {breaks.map((b, i) => (
-                    <div
-                      key={i}
-                      className="mb-2 flex items-center gap-2 text-sm"
-                    >
-                      <select
-                        value={b.dayOfWeek}
-                        onChange={(e) =>
-                          setBreaks((p) => {
-                            const n = [...p];
-                            n[i] = { ...n[i], dayOfWeek: parseInt(e.target.value, 10) };
-                            return n;
-                          })
-                        }
-                        className="rounded border border-zinc-300 px-2 py-1 dark:border-zinc-600 dark:bg-zinc-800"
-                      >
-                        {DAYS.map(({ d, key }) => (
-                          <option key={d} value={d}>
-                            {t(key)}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        type="time"
-                        value={b.startTime}
-                        onChange={(e) =>
-                          setBreaks((p) => {
-                            const n = [...p];
-                            n[i] = { ...n[i], startTime: e.target.value };
-                            return n;
-                          })
-                        }
-                        className="rounded border border-zinc-300 px-2 py-1 dark:border-zinc-600 dark:bg-zinc-800"
-                      />
-                      <input
-                        type="time"
-                        value={b.endTime}
-                        onChange={(e) =>
-                          setBreaks((p) => {
-                            const n = [...p];
-                            n[i] = { ...n[i], endTime: e.target.value };
-                            return n;
-                          })
-                        }
-                        className="rounded border border-zinc-300 px-2 py-1 dark:border-zinc-600 dark:bg-zinc-800"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => removeBreak(i)}
-                        className="text-red-600 hover:underline"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={addBreak}
-                    className="text-sm text-zinc-600 underline dark:text-zinc-400"
-                  >
-                    {t("staff.addBreak")}
-                  </button>
-                </div>
-
-                <div>
-                  <h3 className="mb-2 flex items-center gap-2 text-sm font-medium">
-                    <CalendarOff className="h-4 w-4" />
-                    {t("staff.timeOff")}
-                  </h3>
-                  {timeOff.map((to, i) => (
-                    <div
-                      key={i}
-                      className="mb-2 flex flex-wrap items-center gap-2 text-sm"
-                    >
-                      <input
-                        type="date"
-                        value={to.startDate}
-                        onChange={(e) =>
-                          setTimeOff((p) => {
-                            const n = [...p];
-                            n[i] = { ...n[i], startDate: e.target.value };
-                            return n;
-                          })
-                        }
-                        className="rounded border border-zinc-300 px-2 py-1 dark:border-zinc-600 dark:bg-zinc-800"
-                      />
-                      <input
-                        type="date"
-                        value={to.endDate}
-                        onChange={(e) =>
-                          setTimeOff((p) => {
-                            const n = [...p];
-                            n[i] = { ...n[i], endDate: e.target.value };
-                            return n;
-                          })
-                        }
-                        className="rounded border border-zinc-300 px-2 py-1 dark:border-zinc-600 dark:bg-zinc-800"
-                      />
-                      <select
-                        value={to.reason}
-                        onChange={(e) =>
-                          setTimeOff((p) => {
-                            const n = [...p];
-                            n[i] = { ...n[i], reason: e.target.value };
-                            return n;
-                          })
-                        }
-                        className="rounded border border-zinc-300 px-2 py-1 dark:border-zinc-600 dark:bg-zinc-800"
-                      >
-                        <option value="vacation">{t("staff.vacation")}</option>
-                        <option value="sick">{t("staff.sick")}</option>
-                        <option value="personal">{t("staff.personal")}</option>
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => removeTimeOff(i)}
-                        className="text-red-600 hover:underline"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={addTimeOff}
-                    className="text-sm text-zinc-600 underline dark:text-zinc-400"
-                  >
-                    {t("staff.addTimeOff")}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {activeTab === "services" && editing && (
-              <div className="space-y-4">
-                <h3 className="flex items-center gap-2 text-sm font-medium">
-                  <Scissors className="h-4 w-4" />
-                  {t("staff.myServices")}
-                </h3>
-                {(editing.staffServices ?? []).length === 0 ? (
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                    {t("staff.noServicesAssigned")}
-                  </p>
-                ) : (
-                  <div className="space-y-2">
-                    {(editing.staffServices ?? []).map((ss) => (
-                      <div
-                        key={ss.id}
-                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-600 dark:bg-zinc-800/50"
-                      >
-                        <div>
-                          <p className="font-medium">{ss.service.name}</p>
-                          <p className="flex items-center gap-4 text-sm text-zinc-500">
-                            <span className="flex items-center gap-1">
-                              <Clock className="h-3.5 w-3.5" />
-                              {ss.durationMinutes} min
-                            </span>
-                            <span className="flex items-center gap-1">
-                              ₪{Number(ss.price).toFixed(0)}
-                            </span>
-                          </p>
-                        </div>
-                        {editingService?.id === ss.id ? (
-                          <div className="flex flex-wrap items-center gap-2">
-                            <div>
-                              <span className="mb-0.5 block text-xs text-zinc-500">{t("services.duration")}</span>
-                              <input
-                                type="number"
-                                min={1}
-                                max={480}
-                                value={serviceDuration}
-                                onChange={(e) =>
-                                  setServiceDuration(parseInt(e.target.value, 10) || 30)
-                                }
-                                className="w-16 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
-                              />
-                            </div>
-                            <div>
-                              <span className="mb-0.5 block text-xs text-zinc-500">{t("services.price")}</span>
-                              <input
-                                type="number"
-                                min={0}
-                                value={servicePrice}
-                                onChange={(e) =>
-                                  setServicePrice(parseFloat(e.target.value) || 0)
-                                }
-                                className="w-20 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
-                              />
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                updateStaffServicesMutation.mutate({
-                                  staffId: editing.id,
-                                  updates: [
-                                    {
-                                      staffServiceId: ss.id,
-                                      durationMinutes: serviceDuration,
-                                      price: servicePrice,
-                                    },
-                                  ],
-                                });
-                              }}
-                              disabled={updateStaffServicesMutation.isPending}
-                              className="btn-primary rounded px-2 py-1 text-sm"
-                            >
-                              {t("staff.save")}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setEditingService(null)}
-                              className="rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600"
-                            >
-                              {t("staff.cancel")}
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="flex gap-1">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingService(ss);
-                                setServiceDuration(ss.durationMinutes);
-                                setServicePrice(Number(ss.price));
-                              }}
-                              className="rounded p-1.5 text-zinc-500 hover:bg-zinc-200 hover:text-zinc-700 dark:hover:bg-zinc-700 dark:hover:text-zinc-300"
-                              aria-label={t("staff.edit")}
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (confirm(t("staff.confirmRemoveService") || "Remove this service?")) {
-                                  removeStaffServiceMutation.mutate({
-                                    staffId: editing.id,
-                                    staffServiceId: ss.id,
-                                  });
-                                }
-                              }}
-                              className="rounded p-1.5 text-zinc-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
-                              aria-label={t("staff.delete")}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className="flex flex-wrap items-end gap-2 border-t border-zinc-200 pt-4 dark:border-zinc-700">
-                  <select
-                    value={addServiceId}
-                    onChange={(e) => setAddServiceId(e.target.value)}
-                    className="min-h-[2.75rem] min-w-[10rem] rounded-lg border-2 border-zinc-300 px-3 py-2.5 text-sm dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100"
-                  >
-                    <option value="">{t("staff.addService")}</option>
-                    {servicesList
-                      .filter(
-                        (s) =>
-                          !(editing.staffServices ?? []).some(
-                            (ss) => ss.service.id === s.id
-                          )
-                      )
-                      .map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                  </select>
-                  {addServiceId && (
-                    <>
-                      <div>
-                        <span className="mb-0.5 block text-xs text-zinc-500">
-                          {t("services.duration")} <span className="text-red-500">*</span>
-                        </span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={480}
-                          placeholder={t("services.duration")}
-                          value={serviceDuration}
-                          onChange={(e) =>
-                            setServiceDuration(parseInt(e.target.value, 10) || 30)
-                          }
-                          className="w-20 rounded-lg border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
-                        />
-                      </div>
-                      <div>
-                        <span className="mb-0.5 block text-xs text-zinc-500">
-                          {t("services.price")} <span className="text-red-500">*</span>
-                        </span>
-                        <input
-                          type="number"
-                          min={0}
-                          placeholder={t("services.price")}
-                          value={servicePrice}
-                          onChange={(e) =>
-                            setServicePrice(parseFloat(e.target.value) || 0)
-                          }
-                          className="w-24 rounded-lg border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          addStaffServiceMutation.mutate({
-                            staffId: editing.id,
-                            serviceId: addServiceId,
-                            durationMinutes: serviceDuration,
-                            price: servicePrice,
-                          });
-                        }}
-                        disabled={
-                          addStaffServiceMutation.isPending ||
-                          serviceDuration < 1 ||
-                          servicePrice <= 0
-                        }
-                        className="btn-primary rounded-lg px-3 py-1 text-sm disabled:opacity-50"
-                      >
-                        {t("staff.addService")}
-                      </button>
-                    </>
-                  )}
-                  <div className="flex w-full flex-wrap items-end gap-2">
-                    {!showNewServiceForm ? (
-                      <button
-                        type="button"
-                        onClick={() => setShowNewServiceForm(true)}
-                        className="flex items-center gap-1 text-sm text-primary hover:underline"
-                      >
-                        <Plus className="h-4 w-4" />
-                        {t("staff.addNewService")}
-                      </button>
-                    ) : (
-                      <div className="flex w-full flex-wrap items-end gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-600 dark:bg-zinc-800/50">
-                        <div>
-                          <span className="mb-0.5 block text-xs text-zinc-500">
-                            {t("services.name")} <span className="text-red-500">*</span>
-                          </span>
-                          <input
-                            type="text"
-                            value={newServiceName}
-                            onChange={(e) => setNewServiceName(e.target.value)}
-                            placeholder={t("services.name")}
-                            className="w-32 rounded-lg border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
-                          />
-                        </div>
-                        <div>
-                          <span className="mb-0.5 block text-xs text-zinc-500">
-                            {t("services.duration")} <span className="text-red-500">*</span>
-                          </span>
-                          <input
-                            type="number"
-                            min={1}
-                            max={480}
-                            value={serviceDuration}
-                            onChange={(e) =>
-                              setServiceDuration(parseInt(e.target.value, 10) || 30)
-                            }
-                            className="w-20 rounded-lg border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
-                          />
-                        </div>
-                        <div>
-                          <span className="mb-0.5 block text-xs text-zinc-500">
-                            {t("services.price")} <span className="text-red-500">*</span>
-                          </span>
-                          <input
-                            type="number"
-                            min={0}
-                            value={servicePrice}
-                            onChange={(e) =>
-                              setServicePrice(parseFloat(e.target.value) || 0)
-                            }
-                            className="w-24 rounded-lg border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (!newServiceName.trim()) {
-                              toast.error(t("services.name"));
-                              return;
-                            }
-                            createAndAssignServiceMutation.mutate({
-                              staffId: editing.id,
-                              name: newServiceName.trim(),
-                              branchId: editing.branchId ?? branches[0]?.id ?? "",
-                              durationMinutes: serviceDuration,
-                              price: servicePrice,
-                            });
-                          }}
-                          disabled={
-                            createAndAssignServiceMutation.isPending ||
-                            !newServiceName.trim() ||
-                            !(editing.branchId ?? branches[0]?.id) ||
-                            serviceDuration < 1 ||
-                            servicePrice <= 0
-                          }
-                          className="btn-primary rounded-lg px-3 py-1 text-sm disabled:opacity-50"
-                        >
-                          {createAndAssignServiceMutation.isPending
-                            ? t("widget.loading")
-                            : t("staff.addService")}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowNewServiceForm(false);
-                            setNewServiceName("");
-                          }}
-                          className="rounded-lg border border-zinc-300 px-3 py-1 text-sm dark:border-zinc-600"
-                        >
-                          {t("staff.cancel")}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
             </div>
 
             <div className="shrink-0 border-t border-zinc-200 px-6 py-4 dark:border-zinc-700">
@@ -1645,9 +2241,10 @@ export default function AdminStaffPage() {
               <button
                 type="button"
                 onClick={() => {
+                  const wasAdd = modal === "add";
                   setModal(null);
                   setEditing(null);
-                  resetForm();
+                  if (wasAdd) resetForm();
                 }}
                 className="flex-1 rounded-lg border border-zinc-300 px-4 py-2 text-sm font-medium dark:border-zinc-600"
               >
@@ -1657,21 +2254,13 @@ export default function AdminStaffPage() {
                 type="button"
                 onClick={() => {
                   if (!form.firstName.trim() || !form.lastName.trim()) {
-                    setActiveTab("profile");
+                    toast.error(t("staff.name") + " *");
                     return;
                   }
-                  if (activeTab === "profile") {
-                    if (modal === "add") {
-                      createMutation.mutate(form);
-                    } else if (editing) {
-                      updateMutation.mutate({ id: editing.id, data: form, omitPhone: true });
-                    }
-                  } else {
-                    if (modal === "add") {
-                      createMutation.mutate(form);
-                    } else if (editing) {
-                      updateMutation.mutate({ id: editing.id, data: form, omitPhone: true });
-                    }
+                  if (modal === "add") {
+                    createMutation.mutate(form);
+                  } else if (editing) {
+                    updateMutation.mutate({ id: editing.id, data: form, omitPhone: true });
                   }
                 }}
                 disabled={
@@ -1689,7 +2278,7 @@ export default function AdminStaffPage() {
             </div>
           </div>
         </div>
-      )}
+      , document.body)}
     </div>
   );
 }

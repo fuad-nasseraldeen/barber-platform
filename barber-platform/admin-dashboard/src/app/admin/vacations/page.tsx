@@ -4,7 +4,7 @@ import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api-client";
 import { useAuthStore } from "@/stores/auth-store";
-import { useBranchStore } from "@/stores/branch-store";
+import { useEffectiveBranchId } from "@/hooks/use-effective-branch-id";
 import { useTranslation } from "@/hooks/use-translation";
 import {
   Plane,
@@ -166,7 +166,7 @@ export default function AdminVacationsPage() {
     retry: false,
     enabled: !!businessId,
   });
-  const selectedBranchId = useBranchStore((s) => s.selectedBranchId);
+  const selectedBranchId = useEffectiveBranchId(businessId);
   const operationalBranchId = selectedBranchId ?? staffMe?.branchId ?? null;
 
   const { data: branchStaff = [] } = useQuery<{ id: string; firstName: string; lastName: string }[]>({

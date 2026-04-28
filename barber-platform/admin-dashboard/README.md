@@ -1,36 +1,89 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Admin Dashboard — תורן
+
+Next.js 16 admin dashboard for the Barber Shop SaaS platform. Multi-tenant UI for businesses, staff, appointments, customers, and analytics.
+
+## Tech Stack
+
+- **Next.js 16** (App Router, Turbopack)
+- **React 19**, TypeScript
+- **Tailwind CSS 4**
+- **TanStack Query** (data fetching, caching)
+- **Zustand** (state)
+- **FullCalendar** (appointments, resource-timegrid)
+- **Recharts** (analytics)
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- Node.js 18+
+- Backend API running (see [backend README](../backend/README.md))
+
+### 1. Install & Run
+
+```bash
+npm install
+```
+
+Create `.env.local`:
+
+```
+NEXT_PUBLIC_API_URL=http://localhost:3000
+NEXT_PUBLIC_GOOGLE_CLIENT_ID=xxx.apps.googleusercontent.com
+NEXT_PUBLIC_GOOGLE_MAPS_KEY=AIza...   # optional, for address autocomplete
+```
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3001](http://localhost:3001).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### 2. Build (production)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run build
+npm run start
+```
 
-## Learn More
+## Scripts
 
-To learn more about Next.js, take a look at the following resources:
+| Script | Description |
+|--------|-------------|
+| `npm run dev` | Development server (port 3001, webpack) |
+| `npm run build` | Production build |
+| `npm run start` | Start production server |
+| `npm run lint` | ESLint |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Project Structure
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```
+admin-dashboard/
+├── src/
+│   ├── app/              # App Router pages
+│   │   ├── admin/        # Admin dashboard
+│   │   ├── employee/     # Employee dashboard
+│   │   ├── staff/        # Staff portal
+│   │   └── login/        # Auth
+│   ├── components/
+│   ├── lib/              # API client, i18n, utils
+│   └── types/
+├── public/
+└── next.config.ts
+```
 
-## Deploy on Vercel
+## Environment Variables
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `NEXT_PUBLIC_API_URL` | ✓ | Backend API base URL |
+| `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | ✓ | Google OAuth Client ID |
+| `NEXT_PUBLIC_GOOGLE_MAPS_KEY` | Optional | Google Maps API key (address autocomplete) |
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Deployment
+
+See [VERCEL_DEPLOY.md](./VERCEL_DEPLOY.md) for Vercel deployment.
+
+## i18n
+
+Hebrew, English, Arabic supported. Translation keys in `src/lib/i18n.ts`. See [NOTIFICATIONS_I18N.md](./docs/NOTIFICATIONS_I18N.md) for notification i18n.
