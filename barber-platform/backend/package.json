@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "description": "Production-grade SaaS platform for service-based businesses",
   "private": true,
+  "engines": {
+    "node": "20.x",
+    "npm": "10.x"
+  },
   "scripts": {
     "clean": "npx rimraf dist",
     "build": "npx --no-install nest build",
