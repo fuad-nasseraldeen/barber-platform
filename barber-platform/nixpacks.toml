@@ -1,9 +1,9 @@
 [phases.setup]
 # Keep Node version aligned with backend requirements (Node 18+)
-nixPkgs = ["nodejs_20"]
+nixPkgs = ["nodejs_22"]
 
 [phases.install]
-cmds = ["npm ci --omit=dev"]
+cmds = ["npm install --omit=dev --no-audit --no-fund"]
 
 [phases.build]
 cmds = ["npm run build"]
