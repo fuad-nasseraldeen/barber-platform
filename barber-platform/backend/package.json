@@ -4,8 +4,8 @@
   "description": "Production-grade SaaS platform for service-based businesses",
   "private": true,
   "engines": {
-    "node": "20.x",
-    "npm": "10.x"
+    "node": ">=20.19.0",
+    "npm": ">=10"
   },
   "scripts": {
     "clean": "npx rimraf dist",

@@ -2,10 +2,10 @@
 nixPkgs = ["nodejs_22"]
 
 [phases.install]
-cmds = ["npm install --omit=dev --no-audit --no-fund"]
+cmds = ["npm ci"]
 
 [phases.build]
-cmds = ["npm run build"]
+cmds = ["npm run build", "npm prune --omit=dev"]
 
 [start]
 cmd = "npm run start:prod"
