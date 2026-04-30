@@ -18,7 +18,9 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { IoAdapter } from '@nestjs/platform-socket.io';
-import * as compression from 'compression';
+// CJS module — keep require form for stable runtime/type behavior in CI and dist.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const compression = require('compression');
 import { join } from 'path';
 import { mkdirSync, existsSync } from 'fs';
 import { AppModule } from './app.module';
