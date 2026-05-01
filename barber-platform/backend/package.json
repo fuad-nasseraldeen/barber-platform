@@ -9,7 +9,8 @@
   },
   "scripts": {
     "clean": "npx rimraf dist",
-    "build": "npx --no-install nest build",
+    "build": "npm run prisma:generate && npx --no-install nest build",
+    "postinstall": "npm run prisma:generate",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "node dist/src/main.js",
     "start:dev": "npx --no-install nest start --watch",
