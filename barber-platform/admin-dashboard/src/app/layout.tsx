@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import "./globals.css";
 import { QueryProvider } from "@/components/providers/query-provider";
 import { LocaleProvider } from "@/components/providers/locale-provider";
@@ -30,7 +31,9 @@ export default function RootLayout({
         className="antialiased"
         suppressHydrationWarning
       >
-        <RouteProgressBar />
+        <Suspense fallback={null}>
+          <RouteProgressBar />
+        </Suspense>
         <QueryProvider>
           <LocaleProvider>
             <SessionBootstrap>

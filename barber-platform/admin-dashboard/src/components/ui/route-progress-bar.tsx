@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 
 const START_VALUE = 12;
@@ -9,7 +9,6 @@ const MAX_AUTO_VALUE = 88;
 
 export function RouteProgressBar() {
   const pathname = usePathname();
-  const searchParams = useSearchParams();
   const [visible, setVisible] = useState(false);
   const [progress, setProgress] = useState(0);
   const rafRef = useRef<number | null>(null);
@@ -67,7 +66,7 @@ export function RouteProgressBar() {
   useEffect(() => {
     finish();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathname, searchParams]);
+  }, [pathname]);
 
   useEffect(() => {
     const onDocumentClick = (event: MouseEvent) => {
@@ -129,4 +128,3 @@ export function RouteProgressBar() {
     </AnimatePresence>
   );
 }
-
