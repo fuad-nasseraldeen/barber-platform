@@ -17,6 +17,7 @@ import { diskStorage } from 'multer';
 import { extname } from 'path';
 import { randomUUID } from 'crypto';
 import { StaffService } from './staff.service';
+import { getStaffUploadsDir } from '../common/uploads-path';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles, Permissions } from '../common/decorators/roles.decorator';
@@ -187,7 +188,7 @@ export class StaffController {
   @UseInterceptors(
     FileInterceptor('photo', {
       storage: diskStorage({
-        destination: './uploads/staff',
+        destination: getStaffUploadsDir(),
         filename: (_, file, cb) => {
           const ext = extname(file.originalname) || '.jpg';
           cb(null, `${randomUUID()}${ext}`);
@@ -462,7 +463,7 @@ export class StaffController {
   @UseInterceptors(
     FileInterceptor('photo', {
       storage: diskStorage({
-        destination: './uploads/staff',
+        destination: getStaffUploadsDir(),
         filename: (_, file, cb) => {
           const ext = extname(file.originalname) || '.jpg';
           cb(null, `${randomUUID()}${ext}`);

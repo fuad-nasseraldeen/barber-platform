@@ -26,6 +26,7 @@ import { mkdirSync, existsSync } from 'fs';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { enableRedis } from './common/redis-config';
+import { getStaffUploadsDir, getUploadsRootDir } from './common/uploads-path';
 
 // CJS module — default import breaks in dist without esModuleInterop (PM2: "default is not a function").
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -109,12 +110,13 @@ async function bootstrap() {
 
   app.use(compression());
   app.use(cookieParser());
-  const uploadsDir = join(process.cwd(), 'uploads', 'staff');
+  const uploadsRootDir = getUploadsRootDir();
+  const uploadsDir = getStaffUploadsDir();
   if (!existsSync(uploadsDir)) {
     mkdirSync(uploadsDir, { recursive: true });
   }
   const prefix = process.env.API_PREFIX || 'api/v1';
-  app.useStaticAssets(join(process.cwd(), 'uploads'), {
+  app.useStaticAssets(uploadsRootDir, {
     prefix: '/uploads/',
   });
   app.enableCors({
