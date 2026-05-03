@@ -40,6 +40,7 @@ import {
   resolveBusinessTimeZone,
 } from '../common/business-local-time';
 import { endDateOnlyUtcInclusive, parseDateOnlyUtc } from '../common/date-only';
+import { TimeSlotProjectionLifecycleService } from '../availability/time-slot-projection-lifecycle.service';
 import {
   buildPreviousPeriodRange,
   computeStaffEarningsForRange,
@@ -56,6 +57,7 @@ export class StaffService {
     private readonly config: ConfigService,
     private readonly cache: CacheService,
     private readonly computed: ComputedAvailabilityService,
+    private readonly timeSlotProjectionLifecycle: TimeSlotProjectionLifecycleService,
   ) {}
 
   async registerFromInvite(userId: string, dto: RegisterStaffDto) {
@@ -983,18 +985,57 @@ export class StaffService {
         endTime: d.endTime!.trim(),
       }));
 
+    const txStartedAt = Date.now();
     await this.prisma.$transaction(async (tx) => {
       await tx.staffWorkingHours.deleteMany({ where: { staffId: dto.staffId } });
       if (rows.length > 0) {
         await tx.staffWorkingHours.createMany({ data: rows });
       }
     });
+    const workingHoursTransactionMs = Date.now() - txStartedAt;
+
+    const projectionEnabledRaw = (this.config.get<string>('TIME_SLOT_PROJECTION_ENABLED') ?? '')
+      .trim()
+      .toLowerCase();
+    const projectionEnabled = projectionEnabledRaw === 'true' || projectionEnabledRaw === '1';
+    const projectionSyncEnabled =
+      projectionEnabled && this.config.get<string>('TIME_SLOT_PROJECTION_SYNC_ENABLED') === 'true';
+    let projectionScheduled = false;
+    if (projectionSyncEnabled) {
+      projectionScheduled = true;
+      // Never block the API response on projection regeneration.
+      void this.timeSlotProjectionLifecycle
+        .regenerateBusinessWindow({
+          businessId: dto.businessId,
+          staffId: dto.staffId,
+          reason: 'staff_working_hours_changed_async',
+        })
+        .catch((error) => {
+          this.logger.warn(
+            `[WORKING_HOURS_BATCH] async projection failed staffId=${dto.staffId} businessId=${dto.businessId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        });
+    }
+    const projectionSkipped = !projectionEnabled;
 
     await this.cache.invalidateStaffValidationBundleForStaff(
       dto.staffId,
       'working_hours_batch_replaced',
     );
     await this.cache.invalidateBusiness(dto.businessId);
+    this.logger.log(
+      JSON.stringify({
+        type: 'WORKING_HOURS_BATCH_COMMIT',
+        staffId: dto.staffId,
+        businessId: dto.businessId,
+        workingHoursTransactionMs,
+        projectionScheduled,
+        projectionSkipped,
+        projectionAwaited: false,
+      }),
+    );
     return this.findById(dto.staffId);
   }
 

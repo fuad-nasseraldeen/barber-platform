@@ -36,7 +36,11 @@ describe('TimeSlotProjectionLifecycleService', () => {
     } as any;
 
     const config = {
-      get: jest.fn().mockReturnValue('14'),
+      get: jest.fn((key: string) => {
+        if (key === 'TIME_SLOT_PROJECTION_ENABLED') return 'true';
+        if (key === 'TIME_SLOT_PROJECTION_SYNC_ENABLED') return 'true';
+        return '14';
+      }),
     } as any;
 
     const service = new TimeSlotProjectionLifecycleService(
@@ -45,6 +49,8 @@ describe('TimeSlotProjectionLifecycleService', () => {
       cache,
       config,
     );
+    (service as any).projectionEnabled = true;
+    (service as any).projectionSyncEnabled = true;
 
     return {
       service,
@@ -154,4 +160,3 @@ describe('TimeSlotProjectionLifecycleService', () => {
     );
   });
 });
-

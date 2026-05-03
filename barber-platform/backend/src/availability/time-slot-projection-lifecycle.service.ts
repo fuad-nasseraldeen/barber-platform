@@ -91,6 +91,8 @@ const PROJECTION_WRITE_ACTIONS = new Set<string>([
 @Injectable()
 export class TimeSlotProjectionLifecycleService implements OnModuleInit {
   private readonly logger = new Logger(TimeSlotProjectionLifecycleService.name);
+  private projectionSyncEnabled = false;
+  private projectionEnabled = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -100,12 +102,28 @@ export class TimeSlotProjectionLifecycleService implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
-    this.registerProjectionMutationMiddleware();
+    const projectionRaw = (this.config.get<string>('TIME_SLOT_PROJECTION_ENABLED') ?? '')
+      .trim()
+      .toLowerCase();
+    this.projectionEnabled = projectionRaw === 'true' || projectionRaw === '1';
+    this.projectionSyncEnabled =
+      this.projectionEnabled &&
+      this.config.get<string>('TIME_SLOT_PROJECTION_SYNC_ENABLED') === 'true';
+    if (!this.projectionEnabled) {
+      this.logger.log('TIME_SLOT_PROJECTION_ENABLED=false -> projection service disabled');
+    } else if (this.projectionSyncEnabled) {
+      this.registerProjectionMutationMiddleware();
+    } else {
+      this.logger.log(
+        'TIME_SLOT_PROJECTION_SYNC_ENABLED=false -> projection mutation middleware disabled',
+      );
+    }
     await this.warnIfProjectionEmpty();
   }
 
   @Cron('15 0 * * *', { timeZone: 'UTC' })
   async ensureProjectionWindowDaily(): Promise<void> {
+    if (!this.projectionEnabled) return;
     if (!isSchedulerPrimaryInstance()) return;
     const businesses = await this.prisma.business.findMany({
       where: { deletedAt: null, isActive: true },
@@ -130,6 +148,30 @@ export class TimeSlotProjectionLifecycleService implements OnModuleInit {
   async regenerateBusinessWindow(
     input: RegenerateBusinessWindowInput,
   ): Promise<ProjectionRunSummary> {
+    if (!this.projectionEnabled) {
+      const fallbackDate = DateTime.utc().toFormat('yyyy-MM-dd');
+      const skipped = {
+        businessId: input.businessId,
+        staffId: input.staffId,
+        fromDate: input.fromDate ?? fallbackDate,
+        toDate: input.toDate ?? fallbackDate,
+        generatedRows: 0,
+        deletedRows: 0,
+        durationMs: 0,
+        staffCount: 0,
+        triggerReason: input.reason ?? 'manual_regeneration',
+      } satisfies ProjectionRunSummary;
+      this.logger.log(
+        JSON.stringify({
+          type: 'projectionSkipped',
+          reason: 'TIME_SLOT_PROJECTION_ENABLED=false',
+          businessId: input.businessId,
+          staffId: input.staffId,
+          triggerReason: skipped.triggerReason,
+        }),
+      );
+      return skipped;
+    }
     const t0 = Date.now();
     const reason = input.reason ?? 'manual_regeneration';
     const timezone = await this.getBusinessTimezone(input.businessId);
@@ -266,6 +308,9 @@ export class TimeSlotProjectionLifecycleService implements OnModuleInit {
     result: unknown,
     context: PreloadContext,
   ): Promise<void> {
+    if (!this.projectionSyncEnabled) {
+      return;
+    }
     const model = params.model as ProjectionTriggerModel;
     const triggerReason = this.resolveTriggerReason(model, params);
     const rows = this.resolveRowsForMutation(result, context, params.args?.data);

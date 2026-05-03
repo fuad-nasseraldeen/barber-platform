@@ -261,7 +261,12 @@ export class BookingService {
   ) {}
 
   private get useTimeSlots(): boolean {
-    return this.config.get<string>('USE_TIME_SLOTS') === '1';
+    return this.timeSlotProjectionEnabled && this.config.get<string>('USE_TIME_SLOTS') === '1';
+  }
+
+  private get timeSlotProjectionEnabled(): boolean {
+    const raw = (this.config.get<string>('TIME_SLOT_PROJECTION_ENABLED') ?? '').trim().toLowerCase();
+    return raw === 'true' || raw === '1';
   }
 
   /** Redis cache-aside for `getAvailabilityFromTimeSlots` (requires ENABLE_REDIS=true). */
@@ -3000,6 +3005,17 @@ export class BookingService {
           slotTime: slotLocal.wallHhmm,
           holdId: holdResult.hold.id,
         });
+      } else {
+        this.logger.log(
+          JSON.stringify({
+            type: 'projectionSkipped',
+            operation,
+            reason: 'TIME_SLOT_PROJECTION_ENABLED=false',
+            businessId: dto.businessId,
+            staffId: dto.staffId,
+            holdId: holdResult.hold.id,
+          }),
+        );
       }
 
       const tRedis0 = wallClockMs();
@@ -3182,6 +3198,18 @@ export class BookingService {
         conflictCode,
         errorCode,
       });
+      this.logger.log(
+        JSON.stringify({
+          type: 'SLOT_HOLD_TIMING',
+          operation,
+          businessId: dto.businessId,
+          holdId: resultHoldId ?? null,
+          projectionSkipped: !this.timeSlotProjectionEnabled,
+          prismaQueryCount: getPrismaMiddlewareQueryRecords().length,
+          transactionMs: Math.round(dbAcquireHoldMs),
+          totalMs: Math.round(wallClockMs() - t0),
+        }),
+      );
     }
   }
 
@@ -3238,6 +3266,7 @@ export class BookingService {
           prismaTotalMs: prisma.prismaTotalMs,
           slowQueries: prisma.slowQueries,
           repeatedQueries: prisma.repeatedQueries,
+          projectionSkipped: !this.timeSlotProjectionEnabled,
           projectionRegeneratedDuringCreate,
           notificationsAwaitedInsideCreate: timing.notificationsAwaitedInsideCreate,
           invalidatedKeyCount: timing.invalidatedKeyCount,
@@ -3481,16 +3510,24 @@ export class BookingService {
               const dateYmd = formatBusinessTime(hold.startTime, tz, 'yyyy-MM-dd');
               const startHhmm = formatBusinessTime(hold.startTime, tz, 'HH:mm');
               const slotKey = `${hold.businessId}:${hold.staffId}:${dateYmd}:${startHhmm}`;
-              const businessSettingsRow = await tx.business.findUnique({
-                where: { id: hold.businessId },
-                select: { settings: true },
+              const overlapping = await tx.appointment.findFirst({
+                where: {
+                  businessId: hold.businessId,
+                  staffId: hold.staffId,
+                  status: { notIn: ['CANCELLED', 'NO_SHOW', 'COMPLETED'] },
+                  startTime: { lt: hold.endTime },
+                  endTime: { gt: hold.startTime },
+                },
+                select: { id: true },
               });
-              const requireCustomerArrivalConfirmation =
-                (
-                  (businessSettingsRow?.settings as {
-                    generalSettings?: { requireCustomerArrivalConfirmation?: boolean };
-                  } | null)?.generalSettings?.requireCustomerArrivalConfirmation
-                ) === true;
+              if (overlapping) {
+                txCallbackMs += wallClockMs() - txCallbackStart;
+                throw new ConflictException({
+                  code: BOOKING_SLOT_CONFLICT_CODE,
+                  message: BOOKING_SLOT_CONFLICT_MESSAGE,
+                  refreshAvailability: true,
+                });
+              }
               txOverlapCheckMs += wallClockMs() - tOverlap;
 
               await tx.$executeRawUnsafe('SAVEPOINT booking_confirm_appt');
@@ -3516,18 +3553,6 @@ export class BookingService {
                   select: BookingService.appointmentInsertSelect,
                 });
                 txAppointmentInsertMs += wallClockMs() - tInsertStart;
-                try {
-                  await tx.$executeRaw`
-                    UPDATE appointments
-                    SET "confirmationStatus" = ${
-                      requireCustomerArrivalConfirmation ? 'PENDING' : 'NOT_REQUIRED'
-                    }::"AppointmentConfirmationStatus"
-                    WHERE id = ${created.id}
-                  `;
-                } catch {
-                  // Backward-compatible deployment: ignore until migration is applied.
-                }
-
                 if (updateTimeSlotsInBookTx) {
                   createTiming && setAppointmentCreateTracePhase('tx_time_slot_block');
                   const tTimeSlotsStart = wallClockMs();
@@ -3731,13 +3756,27 @@ export class BookingService {
             ),
           );
         }
-        await this.afterBookingInsert(
-          appointment as Row,
-          appointment!.id,
-          appointment!.startTime,
-          postInsertPerf,
-          confirmTz,
-        );
+        if (!this.timeSlotProjectionEnabled) {
+          this.metrics.incrementBookingSuccess(dto.businessId);
+          this.logger.log(
+            JSON.stringify({
+              type: 'projectionSkipped',
+              operation,
+              reason: 'TIME_SLOT_PROJECTION_ENABLED=false',
+              businessId: dto.businessId,
+              holdId: dto.slotHoldId,
+              appointmentId: appointment!.id,
+            }),
+          );
+        } else {
+          await this.afterBookingInsert(
+            appointment as Row,
+            appointment!.id,
+            appointment!.startTime,
+            postInsertPerf,
+            confirmTz,
+          );
+        }
         postTransactionSideEffectsMs = postInsertPerf.sideEffectsMs;
         postBookingCacheInvalidationMs = postInsertPerf.cacheMs;
         if (createTiming) {
