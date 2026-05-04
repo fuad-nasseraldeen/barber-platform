@@ -3381,10 +3381,12 @@ export class BookingService {
         });
         if (dto.idempotencyKey) {
           const tIdempotency0 = wallClockMs();
-          const existing = await this.prisma.appointment.findFirst({
+          const existing = await this.prisma.appointment.findUnique({
             where: {
-              businessId: dto.businessId,
-              idempotencyKey: dto.idempotencyKey,
+              businessId_idempotencyKey: {
+                businessId: dto.businessId,
+                idempotencyKey: dto.idempotencyKey,
+              },
             },
             select: BookingService.appointmentInsertSelect,
           });
@@ -3512,112 +3514,67 @@ export class BookingService {
               const dateYmd = formatBusinessTime(hold.startTime, tz, 'yyyy-MM-dd');
               const startHhmm = formatBusinessTime(hold.startTime, tz, 'HH:mm');
               const slotKey = `${hold.businessId}:${hold.staffId}:${dateYmd}:${startHhmm}`;
-              const overlapping = await tx.appointment.findFirst({
-                where: {
-                  businessId: hold.businessId,
-                  staffId: hold.staffId,
-                  status: { notIn: ['CANCELLED', 'NO_SHOW', 'COMPLETED'] },
-                  startTime: { lt: hold.endTime },
-                  endTime: { gt: hold.startTime },
-                },
-                select: { id: true },
-              });
-              if (overlapping) {
-                txCallbackMs += wallClockMs() - txCallbackStart;
-                throw new ConflictException({
-                  code: BOOKING_SLOT_CONFLICT_CODE,
-                  message: BOOKING_SLOT_CONFLICT_MESSAGE,
-                  refreshAvailability: true,
-                });
-              }
               txOverlapCheckMs += wallClockMs() - tOverlap;
 
-              await tx.$executeRawUnsafe('SAVEPOINT booking_confirm_appt');
-              try {
-                createTiming && setAppointmentCreateTracePhase('tx_appointment_insert');
-                const tInsertStart = wallClockMs();
-                const created = await tx.appointment.create({
-                  data: {
-                    businessId: hold.businessId,
-                    branchId: dto.branchId ?? null,
-                    locationId: dto.locationId ?? null,
-                    customerId: hold.customerId,
-                    staffId: hold.staffId,
-                    serviceId: hold.serviceId,
-                    startTime: hold.startTime,
-                    endTime: hold.endTime,
-                    status: 'CONFIRMED',
-                    slotKey,
-                    notes: dto.notes ?? null,
-                    slotHoldId: hold.id,
-                    idempotencyKey: dto.idempotencyKey ?? null,
-                  },
-                  select: BookingService.appointmentInsertSelect,
-                });
-                txAppointmentInsertMs += wallClockMs() - tInsertStart;
-                if (updateTimeSlotsInBookTx) {
-                  createTiming && setAppointmentCreateTracePhase('tx_time_slot_block');
-                  const tTimeSlotsStart = wallClockMs();
-                  await this.timeSlots.bookSlotsInTransaction(
-                    tx,
-                    dto.slotHoldId,
-                    created.id,
-                  );
-                  txTimeSlotBlockMs += wallClockMs() - tTimeSlotsStart;
-                }
-
-                const tConsumeStart = wallClockMs();
-                createTiming && setAppointmentCreateTracePhase('tx_slot_hold_consume');
-                await tx.slotHold.update({
-                  where: { id: hold.id },
-                  data: { consumedAt: now },
-                });
-                txSlotHoldConsumeMs += wallClockMs() - tConsumeStart;
-
-                await tx.$executeRawUnsafe('RELEASE SAVEPOINT booking_confirm_appt');
-                createTiming && setAppointmentCreateTracePhase('tx_commit_release_savepoint');
-                bookingInserted = true;
-
-                if (perfLog) {
-                  const tInsert = wallClockMs();
-                  console.log(JSON.stringify({
-                    type: 'BOOKING_CONFIRM_PERF',
-                    lockMs: Math.round(tLock - tTx0),
-                    holdReadMs: Math.round(tHoldRead - tLock),
-                    overlapCheckMs: Math.round(tOverlap - tHoldRead),
-                    bizTzMs: Math.round(tBizTz - tOverlap),
-                    insertConsumeMs: Math.round(tInsert - tBizTz),
-                    totalTxMs: Math.round(tInsert - tTx0),
-                    slotHoldId: dto.slotHoldId,
-                  }));
-                }
-
-                txCallbackMs += wallClockMs() - txCallbackStart;
-
-                return created;
-              } catch (e: unknown) {
-                createTiming && setAppointmentCreateTracePhase('tx_error_rollback_savepoint');
-                await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT booking_confirm_appt');
-                txCallbackMs += wallClockMs() - txCallbackStart;
-                if (isTransientInsertFailure(e)) {
-                  throw e;
-                }
-                if (isPrismaUniqueViolation(e) || isPrismaExclusion23P01(e)) {
-                  this.metrics.incrementBookingConflict(dto.businessId);
-                  throw new ConflictException({
-                    code: BOOKING_SLOT_CONFLICT_CODE,
-                    message: BOOKING_SLOT_CONFLICT_MESSAGE,
-                    refreshAvailability: true,
-                  });
-                }
-                const prisma = getPrismaErrorDiagnostics(e);
-                this.logger.error('[Booking] confirmBookingFromHold failed', {
-                  code: prisma.prismaCode,
-                  slotHoldId: dto.slotHoldId,
-                  businessId: dto.businessId,
-                });
-                throw e;
+              createTiming && setAppointmentCreateTracePhase('tx_appointment_insert');
+              const tInsertStart = wallClockMs();
+              const created = await tx.appointment.create({
+                data: {
+                  businessId: hold.businessId,
+                  branchId: dto.branchId ?? null,
+                  locationId: dto.locationId ?? null,
+                  customerId: hold.customerId,
+                  staffId: hold.staffId,
+                  serviceId: hold.serviceId,
+                  startTime: hold.startTime,
+                  endTime: hold.endTime,
+                  status: 'CONFIRMED',
+                  slotKey,
+                  notes: dto.notes ?? null,
+                  slotHoldId: hold.id,
+                  idempotencyKey: dto.idempotencyKey ?? null,
+                },
+                select: BookingService.appointmentInsertSelect,
+              });
+              txAppointmentInsertMs += wallClockMs() - tInsertStart;
+              if (updateTimeSlotsInBookTx) {
+                createTiming && setAppointmentCreateTracePhase('tx_time_slot_block');
+                const tTimeSlotsStart = wallClockMs();
+                await this.timeSlots.bookSlotsInTransaction(
+                  tx,
+                  dto.slotHoldId,
+                  created.id,
+                );
+                txTimeSlotBlockMs += wallClockMs() - tTimeSlotsStart;
               }
+
+              const tConsumeStart = wallClockMs();
+              createTiming && setAppointmentCreateTracePhase('tx_slot_hold_consume');
+              await tx.slotHold.update({
+                where: { id: hold.id },
+                data: { consumedAt: now },
+              });
+              txSlotHoldConsumeMs += wallClockMs() - tConsumeStart;
+              createTiming && setAppointmentCreateTracePhase('tx_commit_release_savepoint');
+              bookingInserted = true;
+
+              if (perfLog) {
+                const tInsert = wallClockMs();
+                console.log(JSON.stringify({
+                  type: 'BOOKING_CONFIRM_PERF',
+                  lockMs: Math.round(tLock - tTx0),
+                  holdReadMs: Math.round(tHoldRead - tLock),
+                  overlapCheckMs: Math.round(tOverlap - tHoldRead),
+                  bizTzMs: Math.round(tBizTz - tOverlap),
+                  insertConsumeMs: Math.round(tInsert - tBizTz),
+                  totalTxMs: Math.round(tInsert - tTx0),
+                  slotHoldId: dto.slotHoldId,
+                }));
+              }
+
+              txCallbackMs += wallClockMs() - txCallbackStart;
+
+              return created;
             },
             getBookingAtomicBookTxOptions(),
           );
@@ -3675,10 +3632,12 @@ export class BookingService {
           isPrismaUniqueViolation(e) &&
           !isPrismaUniqueViolationOnAppointmentSlotKey(e)
         ) {
-          const replay = await this.prisma.appointment.findFirst({
+          const replay = await this.prisma.appointment.findUnique({
             where: {
-              businessId: dto.businessId,
-              idempotencyKey: dto.idempotencyKey,
+              businessId_idempotencyKey: {
+                businessId: dto.businessId,
+                idempotencyKey: dto.idempotencyKey,
+              },
             },
             select: BookingService.appointmentInsertSelect,
           });
