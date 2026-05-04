@@ -17,8 +17,13 @@ export class BookingEngineBootStatusService implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
-    const useTimeSlots = this.config.get<string>('USE_TIME_SLOTS') === '1';
-    const projectionModeActive = useTimeSlots;
+    const projectionRaw = (this.config.get<string>('TIME_SLOT_PROJECTION_ENABLED') ?? '')
+      .trim()
+      .toLowerCase();
+    const projectionEnabled = projectionRaw === 'true' || projectionRaw === '1';
+    const useTimeSlots =
+      projectionEnabled && this.config.get<string>('USE_TIME_SLOTS') === '1';
+    const projectionModeActive = projectionEnabled && useTimeSlots;
     const bookingWindowDaysRaw = this.config.get<string>('BOOKING_WINDOW_DAYS', '14');
     const bookingWindowDaysParsed = parseInt(bookingWindowDaysRaw, 10);
     const bookingWindowDays =
@@ -78,6 +83,7 @@ export class BookingEngineBootStatusService implements OnModuleInit {
     this.logger.log(
       JSON.stringify({
         type: 'BOOKING_ENGINE_BOOT_STATUS',
+        projectionEnabled,
         timeSlotsEnabled: useTimeSlots,
         redisConnected,
         projectionModeActive,

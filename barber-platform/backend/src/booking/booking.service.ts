@@ -2937,15 +2937,17 @@ export class BookingService {
               }),
             );
           }
-          void this.hotAvailabilityCache
-            .refreshCachedServicesForDay(dto.businessId, dto.staffId, dateYmd)
-            .catch((err: unknown) => {
-              this.logger.warn(
-                `[AvailabilityHotCache] refresh after hold conflict failed: ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
-              );
-            });
+          if (this.useTimeSlots) {
+            void this.hotAvailabilityCache
+              .refreshCachedServicesForDay(dto.businessId, dto.staffId, dateYmd)
+              .catch((err: unknown) => {
+                this.logger.warn(
+                  `[AvailabilityHotCache] refresh after hold conflict failed: ${
+                    err instanceof Error ? err.message : String(err)
+                  }`,
+                );
+              });
+          }
 
           if (process.env.LOG_SLOT_HOLD_PERF === '1') {
             console.log(JSON.stringify({
@@ -4140,24 +4142,37 @@ export class BookingService {
       bookingId: appointmentId,
       date: cancelDateYmd,
     });
-    const tHotRefresh0 = wallClockMs();
-    await this.hotAvailabilityCache.refreshCachedServicesForDay(
-      updated.businessId,
-      appointment.staffId,
-      cancelDateYmd,
-    );
-    this.emitPerfPhase({
-      event: 'CANCEL_PHASE',
-      operation,
-      requestType: 'cancel',
-      phase: 'cancel_hot_cache_refresh',
-      phaseMs: wallClockMs() - tHotRefresh0,
-      totalMs: wallClockMs() - t0,
-      businessId,
-      staffId: appointment.staffId,
-      bookingId: appointmentId,
-      date: cancelDateYmd,
-    });
+    if (this.useTimeSlots) {
+      const tHotRefresh0 = wallClockMs();
+      await this.hotAvailabilityCache.refreshCachedServicesForDay(
+        updated.businessId,
+        appointment.staffId,
+        cancelDateYmd,
+      );
+      this.emitPerfPhase({
+        event: 'CANCEL_PHASE',
+        operation,
+        requestType: 'cancel',
+        phase: 'cancel_hot_cache_refresh',
+        phaseMs: wallClockMs() - tHotRefresh0,
+        totalMs: wallClockMs() - t0,
+        businessId,
+        staffId: appointment.staffId,
+        bookingId: appointmentId,
+        date: cancelDateYmd,
+      });
+    } else {
+      this.logger.log(
+        JSON.stringify({
+          type: 'projectionSkipped',
+          operation,
+          reason: 'TIME_SLOT_PROJECTION_ENABLED=false',
+          businessId,
+          staffId: appointment.staffId,
+          appointmentId,
+        }),
+      );
+    }
     this.emitPerfPhase({
       event: 'CANCEL_PHASE',
       operation,

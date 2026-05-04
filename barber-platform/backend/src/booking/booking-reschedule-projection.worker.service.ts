@@ -57,7 +57,11 @@ export class BookingRescheduleProjectionWorkerService {
   ) {}
 
   private get useTimeSlots(): boolean {
-    return this.config.get<string>('USE_TIME_SLOTS') === '1';
+    const projectionRaw = (this.config.get<string>('TIME_SLOT_PROJECTION_ENABLED') ?? '')
+      .trim()
+      .toLowerCase();
+    const projectionEnabled = projectionRaw === 'true' || projectionRaw === '1';
+    return projectionEnabled && this.config.get<string>('USE_TIME_SLOTS') === '1';
   }
 
   private get availabilityTimeSlotsRedisCacheOn(): boolean {
